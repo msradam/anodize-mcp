@@ -14,6 +14,8 @@ import json
 from dataclasses import dataclass
 from typing import Any, Optional, Union
 
+from .protocol import json_default
+
 
 @dataclass
 class TextContent:
@@ -151,10 +153,13 @@ def is_content_value(value: Any) -> bool:
 
 
 def to_jsonable(value: Any) -> Any:
-    """Convert a dataclass instance to a dict; pass anything else through."""
-    if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        return dataclasses.asdict(value)
-    return value
+    """Return a fully JSON-safe copy of ``value`` for ``structuredContent``.
+
+    Round-tripping through :func:`json_default` converts dataclasses, bytes,
+    datetimes, etc. (including nested ones) so the structured payload never
+    carries a type the client cannot parse.
+    """
+    return json.loads(json.dumps(value, default=json_default))
 
 
 def normalize_tool_result(value: Any) -> tuple[list[dict[str, Any]], Optional[dict[str, Any]]]:
@@ -189,10 +194,10 @@ def normalize_tool_result(value: Any) -> tuple[list[dict[str, Any]], Optional[di
 
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         structured = dataclasses.asdict(value)
-        return [TextContent(json.dumps(structured)).to_dict()], structured
+        return [TextContent(json.dumps(structured, default=json_default)).to_dict()], structured
 
     if isinstance(value, dict):
-        return [TextContent(json.dumps(value)).to_dict()], value
+        return [TextContent(json.dumps(value, default=json_default)).to_dict()], value
 
     if isinstance(value, (int, float, bool)):
         return [TextContent(json.dumps(value)).to_dict()], None
@@ -218,6 +223,8 @@ def normalize_resource_result(
     # Anything else is serialized as JSON text.
     return [
         ResourceContents(
-            uri=uri, text=json.dumps(value), mimeType=mime_type or "application/json"
+            uri=uri,
+            text=json.dumps(value, default=json_default),
+            mimeType=mime_type or "application/json",
         ).to_dict()
     ]

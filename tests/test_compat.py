@@ -13,6 +13,28 @@ class AliasTest(unittest.TestCase):
     def test_fastmcp_alias(self):
         self.assertIs(FastMCP, anodize_mcp.Anodize)
 
+    def test_tags_kwarg_accepted(self):
+        mcp = FastMCP("compat")
+
+        @mcp.tool(tags={"infra", "ops"})
+        def ping() -> str:
+            return "pong"
+
+        @mcp.resource("r://x", tags={"a"})
+        def res() -> str:
+            return "x"
+
+        self.assertIn("ping", mcp._tools)
+
+    def test_programmatic_add(self):
+        mcp = FastMCP("compat")
+
+        def hello(name: str) -> str:
+            return f"hi {name}"
+
+        mcp.add_tool(hello, name="hello")
+        self.assertIn("hello", mcp._tools)
+
     def test_build_with_alias(self):
         mcp = FastMCP("compat", instructions="hi")
 
@@ -91,6 +113,34 @@ class AwaitableContextTest(unittest.TestCase):
         # Stored then read back synchronously.
         ctx.set_state("a", 1)
         self.assertEqual(ctx.get_state("a"), 1)
+
+    def test_log_message_first_signature(self):
+        # FastMCP calls ctx.log(message, level=...); ours must accept that order.
+        notes = []
+        mcp = FastMCP("compat")
+        session = mcp.new_session(send=notes.append)
+        ctx = Context(session, mcp)
+        ctx.log("hello", level="warning")
+        levels = [n["params"]["level"] for n in notes if n.get("method") == "notifications/message"]
+        self.assertEqual(levels, ["warning"])
+
+    def test_context_introspection(self):
+        mcp = FastMCP("compat")
+
+        @mcp.resource("data://x")
+        def res() -> str:
+            return "v"
+
+        @mcp.prompt
+        def greet(name: str) -> str:
+            return f"hi {name}"
+
+        session, _ = init_session(mcp)
+        ctx = Context(session, mcp)
+        self.assertEqual([r["uri"] for r in ctx.list_resources()], ["data://x"])
+        self.assertEqual([p["name"] for p in ctx.list_prompts()], ["greet"])
+        rendered = ctx.get_prompt("greet", {"name": "Ada"})
+        self.assertEqual(rendered["messages"][0]["content"]["text"], "hi Ada")
 
 
 if __name__ == "__main__":

@@ -56,6 +56,10 @@ class Context:
         return self._session.session_id
 
     @property
+    def session_id(self) -> Optional[str]:
+        return self._session.session_id
+
+    @property
     def client_info(self) -> dict[str, Any]:
         return self._session.client_info
 
@@ -63,16 +67,22 @@ class Context:
 
     def log(
         self,
-        level: str,
         message: Any,
+        level: str = "info",
         *,
+        logger_name: Optional[str] = None,
         logger: Optional[str] = None,
         data: Optional[Any] = None,
     ) -> Any:
+        """Send a ``notifications/message`` log entry.
+
+        Argument order matches FastMCP: ``ctx.log(message, level=...)``.
+        """
         if self._session.should_log(level):
             payload: dict[str, Any] = {"level": level}
-            if logger is not None:
-                payload["logger"] = logger
+            name = logger or logger_name
+            if name is not None:
+                payload["logger"] = name
             if data is not None:
                 payload["data"] = data
             else:
@@ -81,19 +91,19 @@ class Context:
         return defer(None)
 
     def debug(self, message: Any, **kwargs: Any) -> Any:
-        return self.log("debug", message, **kwargs)
+        return self.log(message, "debug", **kwargs)
 
     def info(self, message: Any, **kwargs: Any) -> Any:
-        return self.log("info", message, **kwargs)
+        return self.log(message, "info", **kwargs)
 
     def notice(self, message: Any, **kwargs: Any) -> Any:
-        return self.log("notice", message, **kwargs)
+        return self.log(message, "notice", **kwargs)
 
     def warning(self, message: Any, **kwargs: Any) -> Any:
-        return self.log("warning", message, **kwargs)
+        return self.log(message, "warning", **kwargs)
 
     def error(self, message: Any, **kwargs: Any) -> Any:
-        return self.log("error", message, **kwargs)
+        return self.log(message, "error", **kwargs)
 
     # -- progress ---------------------------------------------------------
 
@@ -131,6 +141,19 @@ class Context:
     def read_resource(self, uri: str) -> Any:
         """Read another resource registered on this server and return its contents."""
         return defer(self._server.read_resource(uri, self._session))
+
+    def list_resources(self) -> Any:
+        """List the server's registered (static) resources."""
+        return defer([r.describe() for r in self._server._resources.values()])
+
+    def list_prompts(self) -> Any:
+        """List the server's registered prompts."""
+        return defer([p.describe() for p in self._server._prompts.values()])
+
+    def get_prompt(self, name: str, arguments: Optional[dict[str, Any]] = None) -> Any:
+        """Render one of the server's prompts."""
+        params = {"name": name, "arguments": arguments or {}}
+        return defer(self._server._handle_prompt_get(params, self._session, self._request_id))
 
     # -- server-initiated requests to the client --------------------------
 

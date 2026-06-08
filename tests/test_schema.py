@@ -198,6 +198,52 @@ class TestCoerce(unittest.TestCase):
         self.assertEqual(coerce_arguments(self._specs(f), {"flag": 1}), {"flag": True})
 
 
+class _FakeGe:  # mimics annotated_types.Ge
+    def __init__(self, v):
+        self.ge = v
+
+
+class _FakeMinLen:  # mimics annotated_types.MinLen
+    def __init__(self, v):
+        self.min_length = v
+
+
+class _FakePydanticField:  # mimics a pydantic v2 FieldInfo
+    def __init__(self, constraints, description=None):
+        self.metadata = constraints
+        self.description = description
+
+
+class TestConstraintInterop(unittest.TestCase):
+    def test_pydantic_fieldinfo_constraints(self):
+        def f(n: Annotated[int, _FakePydanticField([_FakeGe(0)], description="count")]):
+            return None
+
+        props = build_input_schema(build_params(f))["properties"]
+        self.assertEqual(props["n"]["minimum"], 0)
+        self.assertEqual(props["n"]["description"], "count")
+        with self.assertRaises(InvalidParams):
+            coerce_arguments(build_params(f), {"n": -1})
+
+    def test_annotated_types_style_constraints(self):
+        def f(s: Annotated[str, _FakeMinLen(2)]):
+            return None
+
+        props = build_input_schema(build_params(f))["properties"]
+        self.assertEqual(props["s"]["minLength"], 2)
+        with self.assertRaises(InvalidParams):
+            coerce_arguments(build_params(f), {"s": "x"})
+
+    def test_default_in_schema(self):
+        def f(a: int = 7, b: Optional[int] = None):
+            return None
+
+        props = build_input_schema(build_params(f))["properties"]
+        self.assertEqual(props["a"]["default"], 7)
+        self.assertIn("default", props["b"])
+        self.assertIsNone(props["b"]["default"])
+
+
 class TestBareContainers(unittest.TestCase):
     def test_bare_containers_keep_type(self):
         self.assertEqual(type_to_schema(list), {"type": "array"})

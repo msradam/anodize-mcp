@@ -31,6 +31,7 @@ from ..exceptions import INVALID_PARAMS, PARSE_ERROR
 from ..protocol import (
     SUPPORTED_PROTOCOL_VERSIONS,
     is_request,
+    json_default,
     make_error,
 )
 from ..session import Session
@@ -119,7 +120,7 @@ def _make_handler(manager: _Manager) -> type[BaseHTTPRequestHandler]:
         def _send_json(
             self, status: int, body: dict[str, Any], extra_headers: Optional[dict[str, str]] = None
         ) -> None:
-            data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+            data = json.dumps(body, ensure_ascii=False, default=json_default).encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(data)))
@@ -265,7 +266,7 @@ def _make_handler(manager: _Manager) -> type[BaseHTTPRequestHandler]:
                         self.wfile.write(b": keepalive\n\n")
                         self.wfile.flush()
                         continue
-                    payload = json.dumps(message, ensure_ascii=False)
+                    payload = json.dumps(message, ensure_ascii=False, default=json_default)
                     self.wfile.write(f"data: {payload}\n\n".encode())
                     self.wfile.flush()
             except (BrokenPipeError, ConnectionResetError, OSError):

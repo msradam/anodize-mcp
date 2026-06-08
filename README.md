@@ -6,21 +6,19 @@ The official MCP SDK and FastMCP both depend on `pydantic`, which depends on `py
 
 ## Why it exists
 
-anodize installs and runs where the Rust-backed alternatives cannot:
+The barrier is specific: a Rust-based package with no prebuilt wheel for your platform and no way to build one because there is no Rust toolchain. `pydantic-core` (under both FastMCP and the official SDK) is the clearest case. anodize has no compiled dependencies at all, so it installs where those cannot:
 
-- IBM mainframes: z/OS, and Linux on Z (s390x), where `pydantic-core` wheels are not published
-- Other commercial Unix: AIX, Solaris/illumos, the BSDs, Cygwin
-- Exotic or older CPU architectures: ppc64le, riscv64, ARMv6/v7, mips, sparc
-- musl + ARM (Alpine on ARM), where the manylinux wheel does not match and source builds need Rust
-- WebAssembly runtimes (Pyodide, PyScript)
-- Locked-down or air-gapped build environments with no compiler, no network, or a policy against installing a Rust toolchain
+- **z/OS** (the sharpest case): IBM's Open Enterprise SDK for Python bundles `cryptography` and `numpy`, but there is no `rustc` targeting z/OS, so `pydantic-core` cannot be built or installed. anodize uses only `json`, `http.server`, `threading`, `dataclasses`, and `typing`.
+- **Linux on IBM Z (s390x), AIX, Solaris/illumos, the BSDs, Cygwin** where prebuilt wheels are often absent (on s390x Linux you can build from source, slowly; anodize skips the build).
+- **Exotic or older CPU architectures**: ppc64le, riscv64, ARMv6/v7, mips, sparc.
+- **WebAssembly** (Pyodide, PyScript) and **locked-down or air-gapped build environments** with no compiler, no network, or a no-Rust policy.
 
-| | Third-party deps | Needs Rust | Installs on the targets above |
+| | Third-party deps | Compiled deps | Installs without a build toolchain |
 |---|---|---|---|
-| Official `mcp` SDK | pydantic, anyio, httpx, starlette, uvicorn | yes | no |
-| FastMCP | pydantic + many | yes | no |
-| `pure-mcp` | pydantic, anyio, httpx, jsonschema | yes | no |
-| **anodize** | none | **no** | **yes** |
+| Official `mcp` SDK | pydantic, anyio, httpx, starlette, uvicorn | pydantic-core (Rust) | no |
+| FastMCP | pydantic + many | pydantic-core (Rust) | no |
+| `pure-mcp` | pydantic, anyio, httpx, jsonschema | pydantic-core (Rust) | no |
+| **anodize** | none | none | **yes** |
 
 ## Install
 
@@ -91,26 +89,37 @@ async def summarize(text: str, ctx: Context) -> str:
 To stay portable both directions, write FastMCP's async style: `async def`
 handlers and `await ctx.*`. anodize's `Context` methods are awaitable for this
 reason (they also work without `await`, as a convenience, but that sync-only
-form does not port back to FastMCP). Matching surface:
+form does not port back to FastMCP).
 
-- `FastMCP(name, instructions=..., version=...)`, `@mcp.tool`, `@mcp.resource`, `@mcp.prompt`
-- `ctx: Context` parameter injection
-- `await ctx.debug/info/warning/error(...)`, `await ctx.report_progress(...)`
-- `await ctx.read_resource(uri)`, `await ctx.sample(...)` (result has `.text`), `await ctx.elicit(message, dataclass)` (result has `.action`/`.data`)
-- `await ctx.get_state/set_state/delete_state(...)`
+This is checked against the official `mcp` reference client: the same client
+driving a FastMCP server and an AnodizeMCP server (identical bodies, only the
+import differs) sees matching tool descriptions, input schemas
+(`additionalProperties: false`, parameter `default`s), and structured output
+(scalar returns wrapped as `{"result": value}` with an `outputSchema`, like
+FastMCP).
+
+### What ports unchanged
+
+- `FastMCP(name, instructions=..., version=...)`; `@mcp.tool`, `@mcp.resource`, `@mcp.prompt` with `name`/`title`/`description`/`annotations`/`tags`; `add_tool`/`add_resource`/`add_prompt`
+- `ctx: Context` injection; `await ctx.debug/info/notice/warning/error(...)`, `ctx.log(message, level=...)`, `report_progress`, `read_resource`, `list_resources`, `list_prompts`, `get_prompt`, `get_state/set_state/delete_state`, `sample` (result `.text`), `elicit(message, dataclass)` (result `.action`/`.data`), `list_roots`; `ctx.session_id`/`client_id`/`request_id`
+- Parameter types: primitives, `Optional`/`Union`/`Literal`/`Enum`, `list`/`dict`/`set`/`tuple`, `datetime`/`date`/`UUID`/`Decimal`, dataclasses, and constraints via either anodize's `Field` or **`pydantic.Field`/`annotated_types`** (`Annotated[int, Field(ge=0)]` validates)
+- Return types: `str`, numbers, `dict`, `list`, dataclasses, `bytes`, `None`, and content blocks (`TextContent`, `ImageContent`, ...)
 - `mcp.run(transport="stdio"|"http", host=..., port=...)`
 
-Drop-in fidelity is checked against the official `mcp` reference client: the
-same client driving a FastMCP server and an AnodizeMCP server (identical bodies,
-only the import differs) sees matching tool descriptions, input schemas
-(`additionalProperties: false`), and structured output (scalar returns wrapped
-as `{"result": value}` with an `outputSchema`, like FastMCP). The one expected
-difference is the negotiated protocol revision: AnodizeMCP implements
-`2025-06-18` and negotiates down gracefully if the client offers a newer one.
+### What does not port (use the alternative, or it is unsupported)
 
-Anything FastMCP-specific not implemented here (middleware, auth providers, the
-deprecated `sse` transport, server composition) is a no-op or raises a clear
-error rather than silently differing.
+| FastMCP feature | On anodize |
+|---|---|
+| `pydantic.BaseModel` as a tool parameter | Use a `@dataclass` instead (BaseModel params are the one hard break) |
+| `from fastmcp.exceptions import ToolError` | `from anodize_mcp import ToolError` (one import line) |
+| `mcp.mount` / `import_server` / server composition | Not supported |
+| `@mcp.custom_route`, middleware, auth providers | Not supported |
+| `@mcp.tool(task=True)` background tasks | Not supported |
+| `transport="sse"` (deprecated) | Raises a clear error; use `"http"` |
+
+The other expected difference is the negotiated protocol revision: AnodizeMCP
+implements `2025-06-18` and negotiates down gracefully if the client offers a
+newer one.
 
 ## Protocol coverage
 

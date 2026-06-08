@@ -91,13 +91,41 @@ def Field(  # noqa: N802 - deliberately Field() to read like pydantic
     )
 
 
+_CONSTRAINT_ATTRS = ("ge", "gt", "le", "lt", "min_length", "max_length")
+
+
+def _absorb_constraints(info: FieldInfo, obj: Any) -> None:
+    """Pull recognised constraint attributes off ``obj`` into ``info``.
+
+    Works for ``annotated_types`` objects (``Ge``, ``Le``, ``MinLen``, ...) and
+    anything else exposing the same attribute names, so ``Annotated[int,
+    Field(ge=0)]`` from pydantic and ``Annotated[int, Ge(0)]`` both apply.
+    """
+    for attr in _CONSTRAINT_ATTRS:
+        value = getattr(obj, attr, None)
+        if value is not None and getattr(info, attr) is None:
+            setattr(info, attr, value)
+
+
 def _field_from_metadata(metadata: tuple[Any, ...]) -> FieldInfo:
     info = FieldInfo()
     for item in metadata:
         if isinstance(item, FieldInfo):
             return item
-        if isinstance(item, str) and info.description is None:
-            info.description = item
+        if isinstance(item, str):
+            if info.description is None:
+                info.description = item
+            continue
+        # A pydantic FieldInfo exposes its constraints in a `metadata` list and
+        # carries an optional `description`; read both without importing pydantic.
+        nested = getattr(item, "metadata", None)
+        if isinstance(nested, (list, tuple)):
+            description = getattr(item, "description", None)
+            if isinstance(description, str) and info.description is None:
+                info.description = description
+            for constraint in nested:
+                _absorb_constraints(info, constraint)
+        _absorb_constraints(info, item)
     return info
 
 
@@ -312,6 +340,10 @@ def build_input_schema(specs: list[ParamSpec]) -> dict[str, Any]:
         # (Annotated[..., Field(description=...)]) did not supply one.
         if "description" not in prop and spec.field.description:
             prop["description"] = spec.field.description
+        if spec.default is not _UNSET and isinstance(
+            spec.default, (str, int, float, bool, type(None), list, dict)
+        ):
+            prop.setdefault("default", spec.default)
         properties[spec.name] = prop
         if spec.required:
             required.append(spec.name)

@@ -2,7 +2,39 @@
 
 from __future__ import annotations
 
+import base64
+import dataclasses
+import datetime as _dt
+import decimal
+import enum
+import uuid
 from typing import Any, Optional, Union
+
+
+def json_default(obj: Any) -> Any:
+    """``json.dumps(default=...)`` hook so no value can crash the encoder.
+
+    Handler return values (and structured content) may contain types JSON does
+    not know: bytes, datetimes, decimals, UUIDs, sets, enums, dataclasses. Map
+    each to a JSON-friendly form; fall back to ``str`` so serialization never
+    raises and a malformed value degrades to text instead of killing the reply.
+    """
+    if isinstance(obj, (bytes, bytearray)):
+        return base64.b64encode(bytes(obj)).decode("ascii")
+    if isinstance(obj, (_dt.datetime, _dt.date, _dt.time)):
+        return obj.isoformat()
+    if isinstance(obj, decimal.Decimal):
+        return float(obj)
+    if isinstance(obj, uuid.UUID):
+        return str(obj)
+    if isinstance(obj, (set, frozenset)):
+        return list(obj)
+    if isinstance(obj, enum.Enum):
+        return obj.value
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        return dataclasses.asdict(obj)
+    return str(obj)
+
 
 # The protocol revision this server implements. Sent back verbatim when the
 # client requests it, otherwise the latest supported version is offered.

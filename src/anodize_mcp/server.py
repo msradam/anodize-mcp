@@ -96,10 +96,12 @@ class AnodizeMCP:
         title: Optional[str] = None,
         description: Optional[str] = None,
         annotations: Optional[dict[str, Any]] = None,
+        tags: Any = None,
     ) -> Any:
         """Register a function as a tool.
 
-        Usable bare (``@mcp.tool``) or called (``@mcp.tool(name="x")``).
+        Usable bare (``@mcp.tool``) or called (``@mcp.tool(name="x")``). ``tags``
+        is accepted for FastMCP source compatibility but not used for filtering.
         """
 
         def decorator(func: F) -> F:
@@ -137,6 +139,7 @@ class AnodizeMCP:
         mime_type: Optional[str] = None,
         size: Optional[int] = None,
         annotations: Optional[dict[str, Any]] = None,
+        tags: Any = None,
     ) -> Callable[[F], F]:
         """Register a function as a resource or, if ``uri`` has ``{vars}``, a template."""
 
@@ -182,6 +185,7 @@ class AnodizeMCP:
         name: Optional[str] = None,
         title: Optional[str] = None,
         description: Optional[str] = None,
+        tags: Any = None,
     ) -> Any:
         """Register a function as a prompt."""
 
@@ -235,6 +239,21 @@ class AnodizeMCP:
             return func
 
         return decorator
+
+    # Programmatic registration (FastMCP source compatibility); the decorators
+    # above already work when called directly, these just read more naturally.
+
+    def add_tool(self, fn: Callable[..., Any], **kwargs: Any) -> Callable[..., Any]:
+        self.tool(**kwargs)(fn)
+        return fn
+
+    def add_prompt(self, fn: Callable[..., Any], **kwargs: Any) -> Callable[..., Any]:
+        self.prompt(**kwargs)(fn)
+        return fn
+
+    def add_resource(self, uri: str, fn: Callable[..., Any], **kwargs: Any) -> Callable[..., Any]:
+        self.resource(uri, **kwargs)(fn)
+        return fn
 
     # ------------------------------------------------------------------
     # Dynamic registration / notifications

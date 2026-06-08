@@ -22,7 +22,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import IO, TYPE_CHECKING, Any, Optional
 
 from ..exceptions import PARSE_ERROR
-from ..protocol import make_error
+from ..protocol import json_default, make_error
 
 if TYPE_CHECKING:
     from ..server import AnodizeMCP
@@ -41,7 +41,7 @@ def serve_stdio(
     write_lock = threading.Lock()
 
     def send(message: dict[str, Any]) -> None:
-        data = json.dumps(message, ensure_ascii=False).encode("utf-8")
+        data = json.dumps(message, ensure_ascii=False, default=json_default).encode("utf-8")
         with write_lock:
             out.write(data + b"\n")
             out.flush()

@@ -124,6 +124,53 @@ class DispatchTest(unittest.TestCase):
         resp = self.call("tools/call", {"name": "add", "arguments": {"a": 1, "b": 2, "x": 9}})
         self.assertEqual(resp["error"]["code"], -32602)
 
+    def test_non_json_returns_are_serializable(self):
+        import base64
+        import datetime
+        import json
+
+        from anodize_mcp.protocol import json_default
+
+        mcp = Anodize("ser")
+
+        @mcp.tool
+        def raw() -> bytes:
+            return b"\x89PNG"
+
+        @dataclass
+        class Ev:
+            when: datetime.datetime
+
+        @mcp.tool
+        def ev() -> Ev:
+            return Ev(datetime.datetime(2025, 1, 1, 12, 0, 0))
+
+        session = mcp.new_session()
+        for name in ("raw", "ev"):
+            resp = mcp.handle_message(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {"name": name, "arguments": {}},
+                },
+                session,
+            )
+            # The whole response must survive the encoder the transports use.
+            json.dumps(resp, default=json_default)
+            self.assertFalse(resp["result"]["isError"])
+        bytes_resp = mcp.handle_message(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "raw", "arguments": {}},
+            },
+            session,
+        )
+        expected = base64.b64encode(b"\x89PNG").decode("ascii")
+        self.assertEqual(bytes_resp["result"]["structuredContent"], {"result": expected})
+
     def test_tool_returns_content_blocks(self):
         result = self.call("tools/call", {"name": "blocks", "arguments": {}})["result"]
         self.assertEqual(
