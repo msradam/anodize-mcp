@@ -1,0 +1,210 @@
+"""The ``Context`` object handlers can request to talk back to the client.
+
+A tool, resource, or prompt handler receives a context by declaring a parameter
+annotated as :class:`Context`. It is never part of the tool's input schema; the
+server injects it at call time.
+
+Every method returns a :class:`~anodize_mcp._deferred.Deferred`, so the same handler
+source runs whether written synchronously (``ctx.info(...)``) or in FastMCP's
+async style (``await ctx.info(...)``). See :mod:`anodize_mcp._deferred`.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+from typing import TYPE_CHECKING, Any, Optional, Union
+
+from ._deferred import defer
+from .clientfeatures import (
+    CreateMessageResult,
+    ElicitResult,
+    Root,
+    elicitation_schema,
+    normalize_sampling_messages,
+)
+from .exceptions import INVALID_REQUEST, McpError
+from .protocol import make_notification
+from .session import Session
+
+if TYPE_CHECKING:
+    from .server import AnodizeMCP
+
+
+class Context:
+    def __init__(
+        self,
+        session: Session,
+        server: AnodizeMCP,
+        request_id: Any = None,
+        progress_token: Any = None,
+    ):
+        self._session = session
+        self._server = server
+        self._request_id = request_id
+        self._progress_token = progress_token
+
+    @property
+    def session(self) -> Session:
+        return self._session
+
+    @property
+    def request_id(self) -> Any:
+        return self._request_id
+
+    @property
+    def client_id(self) -> Optional[str]:
+        return self._session.session_id
+
+    @property
+    def client_info(self) -> dict[str, Any]:
+        return self._session.client_info
+
+    # -- logging ----------------------------------------------------------
+
+    def log(
+        self,
+        level: str,
+        message: Any,
+        *,
+        logger: Optional[str] = None,
+        data: Optional[Any] = None,
+    ) -> Any:
+        if self._session.should_log(level):
+            payload: dict[str, Any] = {"level": level}
+            if logger is not None:
+                payload["logger"] = logger
+            if data is not None:
+                payload["data"] = data
+            else:
+                payload["data"] = message if isinstance(message, (dict, list)) else str(message)
+            self._session.send_message(make_notification("notifications/message", payload))
+        return defer(None)
+
+    def debug(self, message: Any, **kwargs: Any) -> Any:
+        return self.log("debug", message, **kwargs)
+
+    def info(self, message: Any, **kwargs: Any) -> Any:
+        return self.log("info", message, **kwargs)
+
+    def notice(self, message: Any, **kwargs: Any) -> Any:
+        return self.log("notice", message, **kwargs)
+
+    def warning(self, message: Any, **kwargs: Any) -> Any:
+        return self.log("warning", message, **kwargs)
+
+    def error(self, message: Any, **kwargs: Any) -> Any:
+        return self.log("error", message, **kwargs)
+
+    # -- progress ---------------------------------------------------------
+
+    def report_progress(
+        self,
+        progress: float,
+        total: Optional[float] = None,
+        message: Optional[str] = None,
+    ) -> Any:
+        """Send a progress notification, if the client supplied a token."""
+        if self._progress_token is not None:
+            params: dict[str, Any] = {"progressToken": self._progress_token, "progress": progress}
+            if total is not None:
+                params["total"] = total
+            if message is not None:
+                params["message"] = message
+            self._session.send_message(make_notification("notifications/progress", params))
+        return defer(None)
+
+    # -- per-request/session state ----------------------------------------
+
+    def set_state(self, key: str, value: Any) -> Any:
+        self._session.state[key] = value
+        return defer(None)
+
+    def get_state(self, key: str, default: Any = None) -> Any:
+        return defer(self._session.state.get(key, default))
+
+    def delete_state(self, key: str) -> Any:
+        self._session.state.pop(key, None)
+        return defer(None)
+
+    # -- resource access --------------------------------------------------
+
+    def read_resource(self, uri: str) -> Any:
+        """Read another resource registered on this server and return its contents."""
+        return defer(self._server.read_resource(uri, self._session))
+
+    # -- server-initiated requests to the client --------------------------
+
+    def _require_client_capability(self, name: str) -> None:
+        if name not in self._session.client_capabilities:
+            raise McpError(f"client does not support the {name!r} capability", code=INVALID_REQUEST)
+
+    def sample(
+        self,
+        messages: Any,
+        *,
+        system_prompt: Optional[str] = None,
+        max_tokens: int = 1000,
+        temperature: Optional[float] = None,
+        stop_sequences: Optional[list[str]] = None,
+        model_preferences: Optional[dict[str, Any]] = None,
+        include_context: Optional[str] = None,
+        timeout: float = 60.0,
+    ) -> CreateMessageResult:
+        """Ask the client's LLM to generate a message (``sampling/createMessage``).
+
+        ``messages`` may be a string, a single message dict, or a list of either.
+        """
+        self._require_client_capability("sampling")
+        params: dict[str, Any] = {
+            "messages": normalize_sampling_messages(messages),
+            "maxTokens": max_tokens,
+        }
+        if system_prompt is not None:
+            params["systemPrompt"] = system_prompt
+        if temperature is not None:
+            params["temperature"] = temperature
+        if stop_sequences is not None:
+            params["stopSequences"] = stop_sequences
+        if model_preferences is not None:
+            params["modelPreferences"] = model_preferences
+        if include_context is not None:
+            params["includeContext"] = include_context
+        result = self._session.send_request("sampling/createMessage", params, timeout=timeout)
+        return defer(CreateMessageResult.from_dict(result or {}))
+
+    def elicit(
+        self,
+        message: str,
+        schema: Union[dict[str, Any], type],
+        *,
+        timeout: float = 60.0,
+    ) -> ElicitResult:
+        """Ask the user for structured input via the client (``elicitation/create``).
+
+        ``schema`` is a JSON Schema dict or a dataclass describing the requested
+        fields. When a dataclass is given and the user accepts, ``result.data``
+        is an instance of it; otherwise it is the raw dict.
+        """
+        self._require_client_capability("elicitation")
+        params = {"message": message, "requestedSchema": elicitation_schema(schema)}
+        result = self._session.send_request("elicitation/create", params, timeout=timeout) or {}
+        action = result.get("action", "cancel")
+        content = result.get("content")
+        data: Any = content
+        if (
+            action == "accept"
+            and isinstance(content, dict)
+            and dataclasses.is_dataclass(schema)
+            and isinstance(schema, type)
+        ):
+            try:
+                data = schema(**content)
+            except TypeError:
+                data = content
+        return defer(ElicitResult(action=action, data=data))
+
+    def list_roots(self, *, timeout: float = 30.0) -> list[Root]:
+        """Ask the client for its filesystem roots (``roots/list``)."""
+        self._require_client_capability("roots")
+        result = self._session.send_request("roots/list", {}, timeout=timeout) or {}
+        return defer([Root(uri=r["uri"], name=r.get("name")) for r in result.get("roots", [])])

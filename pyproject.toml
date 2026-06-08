@@ -1,0 +1,60 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "anodize-mcp"
+version = "0.1.0"
+description = "A lightweight, pure-Python MCP (Model Context Protocol) server framework with zero dependencies and no Rust toolchain required."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Adam Munawar Rahman" }]
+keywords = [
+    "mcp",
+    "model-context-protocol",
+    "llm",
+    "pure-python",
+    "no-rust",
+    "stdlib",
+    "zero-dependency",
+]
+classifiers = [
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Operating System :: OS Independent",
+    "License :: OSI Approved :: MIT License",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/amsrahman/anodize-mcp"
+
+[project.optional-dependencies]
+dev = ["ruff", "mypy"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "FURB", "SIM"]
+# This library targets Python 3.9, where `X | Y` unions are unsafe in
+# runtime-evaluated positions (type aliases, cast targets). Keep Optional/Union.
+ignore = ["E501", "UP007", "UP045", "UP035", "UP006"]
+
+[tool.mypy]
+# Runtime floor is 3.9 (enforced by ruff target-version); mypy itself no longer
+# accepts python_version 3.9, so type-check against 3.10. The code avoids
+# 3.10-only runtime features via `from __future__ import annotations`.
+python_version = "3.10"
+files = ["src"]
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+check_untyped_defs = true
+disallow_incomplete_defs = true
