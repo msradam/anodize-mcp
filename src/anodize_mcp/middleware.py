@@ -12,13 +12,32 @@ and friends) run nested inside it for the matching method.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Generic, Optional, TypeVar
+
+T = TypeVar("T")
+R = TypeVar("R")
+
+
+class CallNext(Generic[T, R]):
+    """The next hook in the chain. Generic over (input, output), as in FastMCP.
+
+    Used only as a type annotation; the runtime value passed to hooks is a
+    plain callable.
+    """
+
+    def __call__(self, context: MiddlewareContext[T]) -> Awaitable[R]:
+        raise NotImplementedError
 
 
 @dataclass
-class MiddlewareContext:
-    """What a middleware hook receives about the message in flight."""
+class MiddlewareContext(Generic[T]):
+    """What a middleware hook receives about the message in flight.
+
+    Generic over the message type, matching FastMCP so ``MiddlewareContext[T]``
+    annotations resolve.
+    """
 
     message: Any
     method: Optional[str]

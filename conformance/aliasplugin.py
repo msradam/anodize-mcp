@@ -19,8 +19,11 @@ def pytest_configure(config):
     import fastmcp.server.server as server_module
 
     import anodize_mcp
+    import anodize_mcp.errorhandling
+    import anodize_mcp.logging_middleware
     import anodize_mcp.middleware
     import anodize_mcp.ratelimit
+    import anodize_mcp.timing
 
     # Server and client classes (both the top-level and submodule bindings).
     fastmcp.FastMCP = anodize_mcp.AnodizeMCP
@@ -32,7 +35,11 @@ def pytest_configure(config):
     # At the client boundary FastMCP raises ToolError where anodize raises
     # ClientError; map them so error-path assertions resolve.
     fastmcp.exceptions.ToolError = anodize_mcp.ClientError
+    fastmcp.exceptions.NotFoundError = anodize_mcp.NotFoundError
 
     # Feature modules, mapped to the anodize equivalents.
     sys.modules["fastmcp.server.middleware.middleware"] = anodize_mcp.middleware
     sys.modules["fastmcp.server.middleware.rate_limiting"] = anodize_mcp.ratelimit
+    sys.modules["fastmcp.server.middleware.timing"] = anodize_mcp.timing
+    sys.modules["fastmcp.server.middleware.logging"] = anodize_mcp.logging_middleware
+    sys.modules["fastmcp.server.middleware.error_handling"] = anodize_mcp.errorhandling

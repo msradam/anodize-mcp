@@ -40,7 +40,8 @@ Two categories of FastMCP test fail by design and will not be made to pass:
 
 ## Status
 
-Run against FastMCP 3.4.2 at the pinned SHA. Files that pass in full:
+Run against FastMCP 3.4.2 at the pinned SHA. The CI gate runs these files in
+full (excluding timing/concurrency tests, which are not deterministic):
 
 | FastMCP test file | Result |
 |---|---|
@@ -48,9 +49,17 @@ Run against FastMCP 3.4.2 at the pinned SHA. Files that pass in full:
 | `tests/resources/test_function_resources.py` | 20/20 |
 | `tests/resources/test_file_resources.py` | 11/11 |
 | `tests/tools/tool/test_output_schema.py` | 56/56 |
-| `tests/server/middleware/test_rate_limiting.py` (non-integration) | 22/22 |
+| `tests/server/middleware/test_rate_limiting.py` | 22/22 |
+| `tests/server/middleware/test_timing.py` | 13/13 |
+
+Partial, not gated (remaining failures are the out-of-scope categories above):
+
+| FastMCP test file | Result |
+|---|---|
+| `tests/server/middleware/test_logging.py` | 11/23 |
+| `tests/server/middleware/test_error_handling.py` (deterministic) | 9/18 |
+| `tests/tools/tool/*`, `tests/resources/test_resources.py` | most pass |
 
 Across the broader core suite (tools, resources, prompts, server, client,
-middleware) the current figure is roughly 330 of 520 tests, with the remaining
-failures dominated by the two out-of-scope categories above plus middleware
-modules not yet ported (timing, logging, error handling).
+middleware) the figure is roughly 345 of 520, with the rest dominated by the
+two out-of-scope categories above.

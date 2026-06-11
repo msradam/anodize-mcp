@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
@@ -54,5 +54,10 @@ jobs:
           --with opentelemetry-sdk --with opentelemetry-api
           --with dirty-equals --with inline-snapshot
           python -m pytest -p aliasplugin
+          /tmp/fastmcp-src/tests/prompts/test_prompt.py
+          /tmp/fastmcp-src/tests/resources/test_function_resources.py
+          /tmp/fastmcp-src/tests/resources/test_file_resources.py
+          /tmp/fastmcp-src/tests/tools/tool/test_output_schema.py
           /tmp/fastmcp-src/tests/server/middleware/test_rate_limiting.py
-          -k "not Integration" -o asyncio_mode=auto -W ignore
+          /tmp/fastmcp-src/tests/server/middleware/test_timing.py
+          -k "not Integration and not Retry" -o asyncio_mode=auto -W ignore

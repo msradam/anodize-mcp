@@ -60,6 +60,13 @@ class MethodNotFound(McpError):
         super().__init__(message, code=METHOD_NOT_FOUND, data=data)
 
 
+class NotFoundError(McpError):
+    """A requested entity (resource, prompt, tool) does not exist."""
+
+    def __init__(self, message: str, data: Any = None):
+        super().__init__(message, code=RESOURCE_NOT_FOUND, data=data)
+
+
 class ToolError(Exception):
     """Raised by a tool to signal a recoverable, user-facing failure.
 

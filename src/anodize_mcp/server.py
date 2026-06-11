@@ -471,7 +471,7 @@ class AnodizeMCP:
     ) -> Any:
         from .middleware import OPERATION_HOOKS, MiddlewareContext
 
-        mw_context = MiddlewareContext(
+        mw_context: MiddlewareContext = MiddlewareContext(
             message=params,
             method=method,
             source="client",
