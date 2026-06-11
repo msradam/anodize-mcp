@@ -27,6 +27,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING, Any, Optional
 from urllib.parse import urlsplit
 
+from .._asyncrun import run_maybe_async
+from ..auth import _CURRENT_TOKEN
 from ..exceptions import INVALID_PARAMS, PARSE_ERROR
 from ..protocol import (
     SUPPORTED_PROTOCOL_VERSIONS,
@@ -150,6 +152,37 @@ def _make_handler(manager: _Manager) -> type[BaseHTTPRequestHandler]:
         def _path_ok(self) -> bool:
             return urlsplit(self.path).path == manager.endpoint
 
+        def _authenticate(self) -> tuple[bool, Any]:
+            """Return ``(ok, access_token)``; send 401/403 and return False if not."""
+            auth = manager.server.auth
+            if auth is None:
+                return True, None
+            header = self.headers.get("Authorization", "")
+            token = header[7:].strip() if header[:7].lower() == "bearer " else ""
+            if not token:
+                self._send_json(
+                    HTTPStatus.UNAUTHORIZED,
+                    {"error": "missing bearer token"},
+                    {"WWW-Authenticate": "Bearer"},
+                )
+                return False, None
+            access = run_maybe_async(auth.verify_token(token))
+            if access is None:
+                self._send_json(
+                    HTTPStatus.UNAUTHORIZED,
+                    {"error": "invalid_token"},
+                    {"WWW-Authenticate": 'Bearer error="invalid_token"'},
+                )
+                return False, None
+            required = getattr(auth, "required_scopes", None) or []
+            if required and not set(required) <= set(getattr(access, "scopes", [])):
+                self._send_json(
+                    HTTPStatus.FORBIDDEN,
+                    {"error": "insufficient_scope", "required_scopes": required},
+                )
+                return False, None
+            return True, access
+
         # -- verbs --------------------------------------------------------
 
         def do_POST(self) -> None:  # noqa: N802
@@ -157,6 +190,9 @@ def _make_handler(manager: _Manager) -> type[BaseHTTPRequestHandler]:
                 self._send_status(HTTPStatus.NOT_FOUND)
                 return
             if self._bad_origin() or not self._protocol_version_ok():
+                return
+            authed, access = self._authenticate()
+            if not authed:
                 return
 
             length = int(self.headers.get("Content-Length", "0") or "0")
@@ -199,8 +235,13 @@ def _make_handler(manager: _Manager) -> type[BaseHTTPRequestHandler]:
 
             # No coarse per-session lock here: a handler may block waiting for a
             # client reply that arrives on a *different* POST, which must be free
-            # to run concurrently and resolve the waiter.
-            response = manager.server.handle_message(message, http_session.core)
+            # to run concurrently and resolve the waiter. The access token is set
+            # for the duration of this request so get_access_token() can read it.
+            token_ctx = _CURRENT_TOKEN.set(access)
+            try:
+                response = manager.server.handle_message(message, http_session.core)
+            finally:
+                _CURRENT_TOKEN.reset(token_ctx)
 
             if not is_request(message):
                 # Notification, or a client response to a server-initiated
@@ -221,6 +262,9 @@ def _make_handler(manager: _Manager) -> type[BaseHTTPRequestHandler]:
                 return
             if self._bad_origin() or not self._protocol_version_ok():
                 return
+            authed, _access = self._authenticate()
+            if not authed:
+                return
 
             accept = self.headers.get("Accept", "")
             if "text/event-stream" not in accept:
@@ -237,6 +281,9 @@ def _make_handler(manager: _Manager) -> type[BaseHTTPRequestHandler]:
         def do_DELETE(self) -> None:  # noqa: N802
             if not self._path_ok():
                 self._send_status(HTTPStatus.NOT_FOUND)
+                return
+            authed, _access = self._authenticate()
+            if not authed:
                 return
             session_id = self.headers.get("Mcp-Session-Id")
             if session_id and manager.delete_session(session_id):

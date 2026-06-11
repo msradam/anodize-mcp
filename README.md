@@ -112,8 +112,10 @@ FastMCP).
 |---|---|
 | `pydantic.BaseModel` as a tool parameter | Use a `@dataclass` instead (BaseModel params are the one hard break) |
 | `from fastmcp.exceptions import ToolError` | `from anodize_mcp import ToolError` (one import line) |
+| `auth=` with a token verifier | Supported: `StaticTokenVerifier`, `JWTVerifier`, or a custom verifier (see Authentication) |
+| OAuth 2.1 server flow / hosted-IdP provider wrappers | Not supported; verify externally-issued tokens instead |
 | `mcp.mount` / `import_server` / server composition | Not supported |
-| `@mcp.custom_route`, middleware, auth providers | Not supported |
+| `@mcp.custom_route`, middleware | Not supported |
 | `@mcp.tool(task=True)` background tasks | Not supported |
 | `transport="sse"` (deprecated) | Raises a clear error; use `"http"` |
 
@@ -214,6 +216,43 @@ def complete(argument: str, value: str) -> list[str]:
 ```
 
 A completer may take a third `context` argument (the already-entered values) and may return a `CompletionResult(values=..., total=..., has_more=...)` for explicit totals.
+
+## Authentication
+
+Authentication applies to the HTTP transport. stdio relies on the operating system process boundary (the server runs under the identity of whoever launched it), so it has no token layer.
+
+The model matches FastMCP: pass a token verifier to the server, the HTTP layer reads `Authorization: Bearer <token>`, and a handler reads the result with `get_access_token()` or `ctx.access_token`. Issuing tokens is left to an external identity provider.
+
+```python
+from anodize_mcp import AnodizeMCP, Context, StaticTokenVerifier, get_access_token
+
+mcp = AnodizeMCP(
+    "demo",
+    auth=StaticTokenVerifier({"dev-token": {"client_id": "cli", "scopes": ["read"]}}),
+)
+
+@mcp.tool
+def whoami(ctx: Context) -> str:
+    token = ctx.access_token            # also: get_access_token()
+    return f"{token.client_id} {token.scopes}"
+```
+
+A request with no token gets `401` and a `WWW-Authenticate: Bearer` header; an invalid token gets `401`; a valid token missing a required scope gets `403`.
+
+`JWTVerifier` validates JSON Web Tokens. HS256/384/512 (HMAC) use only the standard library; RS256/384/512 use the `cryptography` package if it is importable and raise a clear error otherwise.
+
+```python
+from anodize_mcp import JWTVerifier
+
+# Symmetric (HS256), standard library only
+mcp = AnodizeMCP("demo", auth=JWTVerifier(secret="...", issuer="https://idp", audience="my-api"))
+
+# Asymmetric, keys fetched from the IdP (needs cryptography for RS256)
+mcp = AnodizeMCP("demo", auth=JWTVerifier(jwks_uri="https://idp/.well-known/jwks.json",
+                                          issuer="https://idp", audience="my-api"))
+```
+
+The verifier is any object with `verify_token(token: str) -> AccessToken | None` and an optional `required_scopes`, so a custom verifier (LDAP, RACF, a database lookup) drops in. The OAuth 2.1 authorization-server flow and the hosted-IdP provider wrappers are out of scope; point those at your IdP and verify the tokens here.
 
 ## Dynamic changes
 

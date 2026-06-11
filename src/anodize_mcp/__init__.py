@@ -30,6 +30,13 @@ the import line.
 
 from __future__ import annotations
 
+from .auth import (
+    AccessToken,
+    JWTVerifier,
+    StaticTokenVerifier,
+    TokenVerifier,
+    get_access_token,
+)
 from .clientfeatures import CompletionResult, CreateMessageResult, ElicitResult, Root
 from .content import (
     AudioContent,
@@ -46,7 +53,7 @@ from .protocol import LATEST_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS
 from .schema import Field
 from .server import Anodize, AnodizeMCP, FastMCP
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "AnodizeMCP",
@@ -68,6 +75,11 @@ __all__ = [
     "ElicitResult",
     "Root",
     "CompletionResult",
+    "AccessToken",
+    "TokenVerifier",
+    "StaticTokenVerifier",
+    "JWTVerifier",
+    "get_access_token",
     "LATEST_PROTOCOL_VERSION",
     "SUPPORTED_PROTOCOL_VERSIONS",
     "__version__",

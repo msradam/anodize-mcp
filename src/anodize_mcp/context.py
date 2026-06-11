@@ -63,6 +63,13 @@ class Context:
     def client_info(self) -> dict[str, Any]:
         return self._session.client_info
 
+    @property
+    def access_token(self) -> Any:
+        """The verified access token for this request, or ``None``."""
+        from .auth import get_access_token
+
+        return get_access_token()
+
     # -- logging ----------------------------------------------------------
 
     def log(

@@ -74,3 +74,8 @@ warn_redundant_casts = true
 no_implicit_optional = true
 check_untyped_defs = true
 disallow_incomplete_defs = true
+
+# cryptography is an optional runtime path (RS256 JWTs) and not a dependency.
+[[tool.mypy.overrides]]
+module = ["cryptography.*"]
+ignore_missing_imports = true

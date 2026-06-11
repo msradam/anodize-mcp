@@ -70,12 +70,16 @@ class AnodizeMCP:
         instructions: Optional[str] = None,
         title: Optional[str] = None,
         page_size: int = 100,
+        auth: Any = None,
     ):
         self.name = name
         self.version = version
         self.title = title
         self.instructions = instructions
         self.page_size = page_size
+        # A token verifier (object with verify_token); enforced by the HTTP
+        # transport only. stdio has no network boundary, so it is ignored there.
+        self.auth = auth
         self._tools: dict[str, ToolDef] = {}
         self._resources: dict[str, ResourceDef] = {}
         self._templates: list[ResourceTemplateDef] = []
