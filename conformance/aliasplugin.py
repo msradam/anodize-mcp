@@ -21,11 +21,11 @@ def pytest_configure(config):
     import mcp.shared.exceptions
 
     import anodize_mcp
-    import anodize_mcp.errorhandling
-    import anodize_mcp.logging_middleware
-    import anodize_mcp.middleware
-    import anodize_mcp.ratelimit
-    import anodize_mcp.timing
+    import anodize_mcp.server.middleware.error_handling
+    import anodize_mcp.server.middleware.logging
+    import anodize_mcp.server.middleware.middleware
+    import anodize_mcp.server.middleware.rate_limiting
+    import anodize_mcp.server.middleware.timing
 
     # Substitute anodize's pure-Python McpError so that isinstance() checks and
     # error-path assertions resolve without the SDK. (mcp.types.* is deliberately
@@ -46,9 +46,10 @@ def pytest_configure(config):
     fastmcp.exceptions.ToolError = anodize_mcp.ClientError
     fastmcp.exceptions.NotFoundError = anodize_mcp.NotFoundError
 
-    # Feature modules, mapped to the anodize equivalents.
-    sys.modules["fastmcp.server.middleware.middleware"] = anodize_mcp.middleware
-    sys.modules["fastmcp.server.middleware.rate_limiting"] = anodize_mcp.ratelimit
-    sys.modules["fastmcp.server.middleware.timing"] = anodize_mcp.timing
-    sys.modules["fastmcp.server.middleware.logging"] = anodize_mcp.logging_middleware
-    sys.modules["fastmcp.server.middleware.error_handling"] = anodize_mcp.errorhandling
+    # Feature modules, mapped to the anodize equivalents (same relative paths).
+    mw = anodize_mcp.server.middleware
+    sys.modules["fastmcp.server.middleware.middleware"] = mw.middleware
+    sys.modules["fastmcp.server.middleware.rate_limiting"] = mw.rate_limiting
+    sys.modules["fastmcp.server.middleware.timing"] = mw.timing
+    sys.modules["fastmcp.server.middleware.logging"] = mw.logging
+    sys.modules["fastmcp.server.middleware.error_handling"] = mw.error_handling

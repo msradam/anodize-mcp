@@ -11,7 +11,7 @@ import logging
 import traceback
 from typing import Any, Callable, Optional
 
-from .exceptions import (
+from ...exceptions import (
     INTERNAL_ERROR,
     INVALID_PARAMS,
     RESOURCE_NOT_FOUND,

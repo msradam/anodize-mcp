@@ -8,7 +8,7 @@ from anodize_mcp import (
     SlidingWindowRateLimitingMiddleware,
     TokenBucketRateLimiter,
 )
-from anodize_mcp.middleware import MiddlewareContext
+from anodize_mcp.server.middleware.middleware import MiddlewareContext
 
 
 def mock_context():

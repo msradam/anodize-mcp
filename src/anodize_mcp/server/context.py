@@ -14,17 +14,17 @@ from __future__ import annotations
 import dataclasses
 from typing import TYPE_CHECKING, Any, Optional, Union
 
-from ._deferred import defer
-from .clientfeatures import (
+from .._deferred import defer
+from ..clientfeatures import (
     CreateMessageResult,
     ElicitResult,
     Root,
     elicitation_schema,
     normalize_sampling_messages,
 )
-from .exceptions import INVALID_REQUEST, McpError
-from .protocol import make_notification
-from .session import Session
+from ..exceptions import INVALID_REQUEST, McpError
+from ..protocol import make_notification
+from ..session import Session
 
 if TYPE_CHECKING:
     from .server import AnodizeMCP
@@ -75,7 +75,7 @@ class Context:
     @property
     def access_token(self) -> Any:
         """The verified access token for this request, or ``None``."""
-        from .auth import get_access_token
+        from ..auth import get_access_token
 
         return get_access_token()
 

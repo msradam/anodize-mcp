@@ -12,19 +12,18 @@ import warnings
 import weakref
 from typing import Any, Callable, Optional, TypeVar
 
-from . import _compat
-from ._asyncrun import run_coro, run_maybe_async
-from ._deferred import defer
-from .attrdict import wrap as attr_wrap
-from .clientfeatures import CompletionResult
-from .content import (
+from .. import _compat
+from .._asyncrun import run_coro, run_maybe_async
+from .._deferred import defer
+from ..attrdict import wrap as attr_wrap
+from ..clientfeatures import CompletionResult
+from ..content import (
     is_content_value,
     normalize_resource_result,
     normalize_tool_result,
     to_jsonable,
 )
-from .context import Context
-from .exceptions import (
+from ..exceptions import (
     INVALID_PARAMS,
     METHOD_NOT_FOUND,
     RESOURCE_NOT_FOUND,
@@ -33,7 +32,7 @@ from .exceptions import (
     ResourceError,
     ToolError,
 )
-from .models import (
+from ..models import (
     PromptArgument,
     PromptDef,
     ResourceDef,
@@ -42,22 +41,23 @@ from .models import (
     compile_uri_template,
     normalize_prompt_result,
 )
-from .pagination import paginate
-from .protocol import (
+from ..pagination import paginate
+from ..protocol import (
     LATEST_PROTOCOL_VERSION,
     SUPPORTED_PROTOCOL_VERSIONS,
     make_error,
     make_notification,
     make_response,
 )
-from .schema import (
+from ..schema import (
     build_input_schema,
     build_params,
     coerce_arguments,
     doc_summary,
     output_schema_for,
 )
-from .session import LOG_LEVELS, Session
+from ..session import LOG_LEVELS, Session
+from .context import Context
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -487,7 +487,7 @@ class AnodizeMCP:
         request_id: Any,
         is_notification: bool,
     ) -> Any:
-        from .middleware import OPERATION_HOOKS, MiddlewareContext
+        from .middleware.middleware import OPERATION_HOOKS, MiddlewareContext
 
         mw_context: MiddlewareContext = MiddlewareContext(
             message=params,
@@ -780,7 +780,7 @@ class AnodizeMCP:
             raise ValueError(f"unknown transport: {transport!r}")
 
     def run_stdio(self, **kwargs: Any) -> None:
-        from .transports.stdio import serve_stdio
+        from ..transports.stdio import serve_stdio
 
         self._enter_lifespan()
         try:
@@ -823,7 +823,7 @@ class AnodizeMCP:
         stateless: bool = False,
     ) -> Any:
         """Return the ASGI application, to run under uvicorn/gunicorn/hypercorn."""
-        from .transports.asgi import make_asgi_app
+        from ..transports.asgi import make_asgi_app
 
         return make_asgi_app(
             self, endpoint=path, allowed_origins=allowed_origins, stateless=stateless
@@ -866,7 +866,7 @@ class AnodizeMCP:
                 server.run()
             return
 
-        from .transports.http import serve_http
+        from ..transports.http import serve_http
 
         self._enter_lifespan()
         try:

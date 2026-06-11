@@ -13,7 +13,7 @@ import time
 from collections import defaultdict, deque
 from typing import Any, Callable, Optional
 
-from .exceptions import McpError
+from ...exceptions import McpError
 from .middleware import Middleware, MiddlewareContext
 
 # JSON-RPC reserves -32000 to -32099 for server-defined errors; FastMCP's
