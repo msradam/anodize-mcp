@@ -788,6 +788,33 @@ class AnodizeMCP:
         finally:
             self._exit_lifespan()
 
+    async def run_async(
+        self, transport: str = "stdio", *, show_banner: Optional[bool] = None, **kwargs: Any
+    ) -> None:
+        """Async counterpart of :meth:`run`. anodize prints no banner, but
+        ``show_banner`` is threaded through for FastMCP parity."""
+        banner = True if show_banner is None else show_banner
+        if transport == "stdio":
+            await self.run_stdio_async(show_banner=banner, **kwargs)
+        elif transport in ("http", "streamable-http"):
+            await self.run_http_async(show_banner=banner, **kwargs)
+        elif transport == "sse":
+            raise ValueError("the legacy 'sse' transport is not implemented; use transport='http'")
+        else:
+            raise ValueError(f"unknown transport: {transport!r}")
+
+    async def run_stdio_async(self, *, show_banner: bool = True, **kwargs: Any) -> None:
+        import asyncio
+
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, lambda: self.run_stdio(**kwargs))
+
+    async def run_http_async(self, *, show_banner: bool = True, **kwargs: Any) -> None:
+        import asyncio
+
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, lambda: self.run_http(**kwargs))
+
     def asgi_app(
         self,
         *,
