@@ -1,24 +1,26 @@
 # anodize-mcp
 
-A lightweight, pure-Python implementation of the [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server framework. Standard library only, zero third-party dependencies, and no Rust toolchain required.
+A lightweight, pure-Python implementation of the [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server framework. **No Rust and no compiled extensions**, so it installs and runs wherever a Rust toolchain cannot.
 
-The official MCP SDK and FastMCP both depend on `pydantic`, which depends on `pydantic-core` (compiled Rust). That dependency has no prebuilt wheel for many targets and cannot be compiled where a Rust toolchain is unavailable or disallowed. anodize fills that gap: it implements the same FastMCP-style API using only `json`, `http.server`, `threading`, `dataclasses`, and `typing` from the standard library. The server class is `AnodizeMCP`, also exported as `FastMCP` so switching later is a one-line import change.
+The official MCP SDK and FastMCP both depend on `pydantic`, which depends on `pydantic-core` (compiled Rust). That dependency has no prebuilt wheel for many targets and cannot be compiled where a Rust toolchain is unavailable or disallowed. anodize fills that gap: it implements the same FastMCP-style API using only the standard library plus pure-Python dependencies. The server class is `AnodizeMCP`, also exported as `FastMCP` so switching later is a one-line import change.
+
+The constraint is specifically **Rust**, not dependencies. anodize's only runtime dependency is `uvicorn` (pure Python, no compiled code), which provides a production-grade HTTP server. The MCP core itself is standard library only.
 
 ## Why it exists
 
-The barrier is specific: a Rust-based package with no prebuilt wheel for your platform and no way to build one because there is no Rust toolchain. `pydantic-core` (under both FastMCP and the official SDK) is the clearest case. anodize has no compiled dependencies at all, so it installs where those cannot:
+The barrier is specific: a Rust-based package with no prebuilt wheel for your platform and no way to build one because there is no Rust toolchain. `pydantic-core` (under both FastMCP and the official SDK) is the clearest case. anodize and its dependencies contain no Rust and no compiled code, so they install where those cannot:
 
-- **z/OS** (the sharpest case): IBM's Open Enterprise SDK for Python bundles `cryptography` and `numpy`, but there is no `rustc` targeting z/OS, so `pydantic-core` cannot be built or installed. anodize uses only `json`, `http.server`, `threading`, `dataclasses`, and `typing`.
+- **z/OS** (the sharpest case): IBM's Open Enterprise SDK for Python bundles `cryptography` (3.3.2, pre-Rust) and `numpy`, but there is no `rustc` targeting z/OS, so `pydantic-core` cannot be built or installed. anodize and `uvicorn` install clean.
 - **Linux on IBM Z (s390x), AIX, Solaris/illumos, the BSDs, Cygwin** where prebuilt wheels are often absent (on s390x Linux you can build from source, slowly; anodize skips the build).
 - **Exotic or older CPU architectures**: ppc64le, riscv64, ARMv6/v7, mips, sparc.
 - **WebAssembly** (Pyodide, PyScript) and **locked-down or air-gapped build environments** with no compiler, no network, or a no-Rust policy.
 
-| | Third-party deps | Compiled deps | Installs without a build toolchain |
+| | Dependencies | Rust / compiled code | Installs without a build toolchain |
 |---|---|---|---|
 | Official `mcp` SDK | pydantic, anyio, httpx, starlette, uvicorn | pydantic-core (Rust) | no |
 | FastMCP | pydantic + many | pydantic-core (Rust) | no |
 | `pure-mcp` | pydantic, anyio, httpx, jsonschema | pydantic-core (Rust) | no |
-| **anodize** | none | none | **yes** |
+| **anodize** | uvicorn (pure Python) | **none** | **yes** |
 
 ## Install
 
@@ -26,7 +28,7 @@ The barrier is specific: a Rust-based package with no prebuilt wheel for your pl
 pip install anodize-mcp
 ```
 
-Requires Python 3.9 or newer. There are no other dependencies.
+Requires Python 3.9 or newer. The only runtime dependency is `uvicorn` (pure Python). Verified on z/OS: both install clean.
 
 ## Quickstart
 
@@ -202,24 +204,35 @@ mcp.run()                       # or mcp.run("stdio")
 mcp.run("stdio", max_workers=8) # thread pool size for concurrent handlers
 ```
 
-Streamable HTTP, a single endpoint (default `/mcp`) on the standard-library HTTP server:
+Streamable HTTP, a single endpoint (default `/mcp`):
 
 ```python
 mcp.run("http", host="127.0.0.1", port=8000)  # serves POST/GET on /mcp
 ```
 
-The HTTP transport validates the `Origin` header (localhost only by default), tracks sessions with `Mcp-Session-Id`, and serves server-to-client messages (progress, logging, sampling) over a GET SSE stream. A client that never opens that GET stream will not receive those notifications; queued ones are bounded and drop oldest-first. Options:
+This runs under **uvicorn**, so production concerns (keep-alive and read timeouts, request size limits, graceful shutdown, signal handling) are handled by uvicorn rather than reimplemented. The uvicorn config matches FastMCP's defaults (`timeout_graceful_shutdown=2`, `lifespan="on"`) and accepts a passthrough:
 
 ```python
 mcp.run(
     "http",
-    host="127.0.0.1",
+    host="0.0.0.0",
     port=8000,
-    endpoint="/mcp",
-    allowed_origins={"localhost", "127.0.0.1"},  # or {"*"} to disable the check
+    path="/mcp",
+    log_level="info",
+    allowed_origins={"localhost", "127.0.0.1"},   # or {"*"} to disable the Origin check
     stateless=False,                              # True skips session tracking
+    uvicorn_config={"timeout_keep_alive": 30},    # any uvicorn.Config setting
 )
 ```
+
+For your own server (gunicorn, hypercorn, behind a reverse proxy, or mounted in a larger app), get the ASGI app directly:
+
+```python
+app = mcp.asgi_app(path="/mcp")
+# uvicorn anodize_app:app --host 0.0.0.0 --port 8000
+```
+
+If uvicorn is somehow not installed, `run("http", ...)` falls back to the standard-library `http.server`. The HTTP transport validates the `Origin` header (localhost only by default), tracks sessions with `Mcp-Session-Id`, and serves server-to-client messages (progress, logging, sampling) over a GET SSE stream.
 
 ## Completions
 

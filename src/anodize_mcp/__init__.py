@@ -56,7 +56,7 @@ from .routes import Request, Response
 from .schema import Field
 from .server import Anodize, AnodizeMCP, FastMCP
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 __all__ = [
     "AnodizeMCP",

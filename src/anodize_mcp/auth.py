@@ -73,6 +73,30 @@ def get_access_token() -> Optional[AccessToken]:
     return _CURRENT_TOKEN.get()
 
 
+def authorize_request(auth: Any, authorization_header: Optional[str]) -> tuple[str, Any]:
+    """Evaluate a bearer token against a verifier.
+
+    Returns one of ``("ok", access_token)``, ``("missing", None)``,
+    ``("invalid", None)``, or ``("forbidden", required_scopes)``. Shared by every
+    transport so they enforce auth identically.
+    """
+    from ._asyncrun import run_maybe_async
+
+    if auth is None:
+        return ("ok", None)
+    header = authorization_header or ""
+    token = header[7:].strip() if header[:7].lower() == "bearer " else ""
+    if not token:
+        return ("missing", None)
+    access = run_maybe_async(auth.verify_token(token))
+    if access is None:
+        return ("invalid", None)
+    required = getattr(auth, "required_scopes", None) or []
+    if required and not set(required) <= set(getattr(access, "scopes", [])):
+        return ("forbidden", required)
+    return ("ok", access)
+
+
 # ---------------------------------------------------------------------------
 # Static tokens
 # ---------------------------------------------------------------------------

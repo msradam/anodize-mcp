@@ -759,17 +759,69 @@ class AnodizeMCP:
         finally:
             self._exit_lifespan()
 
+    def asgi_app(
+        self,
+        *,
+        path: str = "/mcp",
+        allowed_origins: Optional[set[str]] = None,
+        stateless: bool = False,
+    ) -> Any:
+        """Return the ASGI application, to run under uvicorn/gunicorn/hypercorn."""
+        from .transports.asgi import make_asgi_app
+
+        return make_asgi_app(
+            self, endpoint=path, allowed_origins=allowed_origins, stateless=stateless
+        )
+
     def run_http(
         self,
         host: str = "127.0.0.1",
         port: int = 8000,
-        **kwargs: Any,
+        *,
+        path: str = "/mcp",
+        log_level: Optional[str] = None,
+        allowed_origins: Optional[set[str]] = None,
+        stateless: bool = False,
+        uvicorn_config: Optional[dict[str, Any]] = None,
+        sockets: Any = None,
     ) -> None:
+        """Serve over Streamable HTTP, under uvicorn when it is importable.
+
+        The uvicorn config matches FastMCP's defaults (``timeout_graceful_shutdown=2``,
+        ``lifespan="on"``); ``uvicorn_config`` is merged in for any other settings.
+        Falls back to the standard-library server when uvicorn is not installed.
+        """
+        import importlib.util
+
+        if importlib.util.find_spec("uvicorn") is not None:
+            import uvicorn
+
+            app = self.asgi_app(path=path, allowed_origins=allowed_origins, stateless=stateless)
+            config_kwargs: dict[str, Any] = {"timeout_graceful_shutdown": 2, "lifespan": "on"}
+            if log_level is not None:
+                config_kwargs["log_level"] = log_level.lower()
+            config_kwargs.update(uvicorn_config or {})
+            server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, **config_kwargs))
+            if sockets is not None:
+                import asyncio
+
+                asyncio.run(server.serve(sockets=sockets))
+            else:
+                server.run()
+            return
+
         from .transports.http import serve_http
 
         self._enter_lifespan()
         try:
-            serve_http(self, host=host, port=port, **kwargs)
+            serve_http(
+                self,
+                host=host,
+                port=port,
+                endpoint=path,
+                allowed_origins=allowed_origins,
+                stateless=stateless,
+            )
         finally:
             self._exit_lifespan()
 

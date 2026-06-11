@@ -1,0 +1,275 @@
+import importlib.util
+import socket
+import threading
+import time
+import unittest
+from dataclasses import dataclass
+
+from anodize_mcp import AnodizeMCP, Context, Response, StaticTokenVerifier
+
+_HAS_UVICORN = importlib.util.find_spec("uvicorn") is not None
+_HAS_HTTPX = importlib.util.find_spec("httpx") is not None
+
+
+def free_port() -> int:
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+def build_server() -> AnodizeMCP:
+    import contextlib
+
+    @contextlib.contextmanager
+    def lifespan(server):
+        yield {"db": "ready"}
+
+    mcp = AnodizeMCP("asgi-demo", lifespan=lifespan)
+
+    @mcp.tool
+    def add(a: int, b: int, ctx: Context) -> int:
+        assert ctx.lifespan_context == {"db": "ready"}
+        assert ctx.transport == "http"
+        return a + b
+
+    @dataclass
+    class W:
+        temp: float
+
+    @mcp.tool
+    def weather() -> W:
+        return W(21.5)
+
+    @mcp.tool
+    def progressive(ctx: Context) -> str:
+        ctx.report_progress(1, total=1, message="step")
+        return "done"
+
+    @mcp.custom_route("/health", methods=["GET"])
+    def health(request):
+        return {"status": "ok"}
+
+    @mcp.custom_route("/echo", methods=["POST"])
+    def echo(request):
+        return Response(201, {"got": request.json()})
+
+    return mcp
+
+
+@unittest.skipUnless(_HAS_UVICORN and _HAS_HTTPX, "uvicorn and httpx required")
+class AsgiUvicornTest(unittest.TestCase):
+    def _serve(self, mcp, stateless=True):
+        import uvicorn
+
+        port = free_port()
+        app = mcp.asgi_app(stateless=stateless)
+        server = uvicorn.Server(
+            uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error", lifespan="on")
+        )
+        thread = threading.Thread(target=server.run, daemon=True)
+        thread.start()
+        for _ in range(100):
+            if server.started:
+                break
+            time.sleep(0.05)
+        self.addCleanup(self._stop, server, thread)
+        return f"http://127.0.0.1:{port}", server
+
+    def _stop(self, server, thread):
+        server.should_exit = True
+        thread.join(timeout=5)
+
+    def _client(self):
+        import httpx
+
+        return httpx.Client(
+            headers={
+                "Accept": "application/json, text/event-stream",
+                "Content-Type": "application/json",
+            }
+        )
+
+    def test_core_endpoints(self):
+        base, _ = self._serve(build_server())
+        with self._client() as c:
+            init = c.post(
+                base + "/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-06-18",
+                        "capabilities": {},
+                        "clientInfo": {},
+                    },
+                },
+            )
+            self.assertEqual(init.status_code, 200)
+            self.assertEqual(init.json()["result"]["serverInfo"]["name"], "asgi-demo")
+
+            call = c.post(
+                base + "/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": {"name": "add", "arguments": {"a": 2, "b": 3}},
+                },
+            )
+            self.assertEqual(call.json()["result"]["structuredContent"], {"result": 5})
+
+            weather = c.post(
+                base + "/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "method": "tools/call",
+                    "params": {"name": "weather", "arguments": {}},
+                },
+            )
+            self.assertEqual(weather.json()["result"]["structuredContent"], {"temp": 21.5})
+
+    def test_custom_routes(self):
+        base, _ = self._serve(build_server())
+        with self._client() as c:
+            self.assertEqual(c.get(base + "/health").json(), {"status": "ok"})
+            r = c.post(base + "/echo", json={"n": 1})
+            self.assertEqual(r.status_code, 201)
+            self.assertEqual(r.json(), {"got": {"n": 1}})
+            self.assertEqual(c.get(base + "/nope").status_code, 404)
+
+    def test_origin_and_protocol_checks(self):
+        base, _ = self._serve(build_server())
+        with self._client() as c:
+            self.assertEqual(
+                c.post(
+                    base + "/mcp",
+                    headers={"Origin": "http://evil.com"},
+                    json={"jsonrpc": "2.0", "id": 1, "method": "ping"},
+                ).status_code,
+                403,
+            )
+            self.assertEqual(
+                c.post(
+                    base + "/mcp",
+                    headers={"MCP-Protocol-Version": "1999-01-01"},
+                    json={"jsonrpc": "2.0", "id": 1, "method": "ping"},
+                ).status_code,
+                400,
+            )
+
+    def test_auth(self):
+        mcp = AnodizeMCP("a", auth=StaticTokenVerifier({"good": {"scopes": ["x"]}}))
+
+        @mcp.tool
+        def t() -> str:
+            return "ok"
+
+        base, _ = self._serve(mcp)
+        with self._client() as c:
+            unauth = c.post(base + "/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "ping"})
+            self.assertEqual(unauth.status_code, 401)
+            self.assertIn("WWW-Authenticate", unauth.headers)
+            ok = c.post(
+                base + "/mcp",
+                headers={"Authorization": "Bearer good"},
+                json={"jsonrpc": "2.0", "id": 1, "method": "ping"},
+            )
+            self.assertEqual(ok.status_code, 200)
+
+    def test_stateful_session_and_delete(self):
+        base, _ = self._serve(build_server(), stateless=False)
+        with self._client() as c:
+            init = c.post(
+                base + "/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-06-18",
+                        "capabilities": {},
+                        "clientInfo": {},
+                    },
+                },
+            )
+            sid = init.headers["Mcp-Session-Id"]
+            call = c.post(
+                base + "/mcp",
+                headers={"Mcp-Session-Id": sid},
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": {"name": "add", "arguments": {"a": 1, "b": 1}},
+                },
+            )
+            self.assertEqual(call.status_code, 200)
+            self.assertEqual(
+                c.request("DELETE", base + "/mcp", headers={"Mcp-Session-Id": sid}).status_code, 200
+            )
+
+    def test_sse_delivers_progress_notification(self):
+        import httpx
+
+        base, _ = self._serve(build_server(), stateless=False)
+        with self._client() as c:
+            init = c.post(
+                base + "/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-06-18",
+                        "capabilities": {},
+                        "clientInfo": {},
+                    },
+                },
+            )
+            sid = init.headers["Mcp-Session-Id"]
+
+        events = []
+
+        def read_sse():
+            with (
+                httpx.Client() as sc,
+                sc.stream(
+                    "GET",
+                    base + "/mcp",
+                    headers={"Accept": "text/event-stream", "Mcp-Session-Id": sid},
+                    timeout=5,
+                ) as resp,
+            ):
+                for line in resp.iter_lines():
+                    if line.startswith("data:"):
+                        events.append(line)
+                        return
+
+        reader = threading.Thread(target=read_sse, daemon=True)
+        reader.start()
+        time.sleep(0.3)  # let the stream attach
+        with self._client() as c:
+            c.post(
+                base + "/mcp",
+                headers={"Mcp-Session-Id": sid},
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "progressive",
+                        "arguments": {},
+                        "_meta": {"progressToken": "p1"},
+                    },
+                },
+            )
+        reader.join(timeout=4)
+        self.assertTrue(any("progress" in e for e in events), f"no progress event in {events}")
+
+
+if __name__ == "__main__":
+    unittest.main()

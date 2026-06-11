@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "anodize-mcp"
 dynamic = ["version"]
-description = "A lightweight, pure-Python MCP (Model Context Protocol) server framework with zero dependencies and no Rust toolchain required."
+description = "A lightweight, pure-Python MCP (Model Context Protocol) server framework with no Rust toolchain required."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
@@ -16,8 +16,8 @@ keywords = [
     "llm",
     "pure-python",
     "no-rust",
-    "stdlib",
-    "zero-dependency",
+    "zos",
+    "fastmcp",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -33,7 +33,11 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Application Frameworks",
     "Typing :: Typed",
 ]
-dependencies = []
+# All dependencies are pure-Python with no Rust or compiled extensions, so they
+# install everywhere this package targets (including z/OS).
+dependencies = [
+    "uvicorn>=0.30",
+]
 
 [project.urls]
 Homepage = "https://github.com/msradam/anodize-mcp"
@@ -75,7 +79,8 @@ no_implicit_optional = true
 check_untyped_defs = true
 disallow_incomplete_defs = true
 
-# cryptography is an optional runtime path (RS256 JWTs) and not a dependency.
+# cryptography is an optional runtime path (RS256 JWTs); uvicorn is imported
+# lazily and may be absent from the type-checking environment.
 [[tool.mypy.overrides]]
-module = ["cryptography.*"]
+module = ["cryptography.*", "uvicorn", "uvicorn.*"]
 ignore_missing_imports = true

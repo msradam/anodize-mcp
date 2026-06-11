@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from urllib.parse import urlsplit
 
 from .._asyncrun import run_maybe_async
-from ..auth import _CURRENT_TOKEN
+from ..auth import _CURRENT_TOKEN, authorize_request
 from ..exceptions import INVALID_PARAMS, PARSE_ERROR
 from ..protocol import (
     SUPPORTED_PROTOCOL_VERSIONS,
@@ -155,34 +155,23 @@ def _make_handler(manager: _Manager) -> type[BaseHTTPRequestHandler]:
 
         def _authenticate(self) -> tuple[bool, Any]:
             """Return ``(ok, access_token)``; send 401/403 and return False if not."""
-            auth = manager.server.auth
-            if auth is None:
-                return True, None
-            header = self.headers.get("Authorization", "")
-            token = header[7:].strip() if header[:7].lower() == "bearer " else ""
-            if not token:
-                self._send_json(
-                    HTTPStatus.UNAUTHORIZED,
-                    {"error": "missing bearer token"},
-                    {"WWW-Authenticate": "Bearer"},
-                )
-                return False, None
-            access = run_maybe_async(auth.verify_token(token))
-            if access is None:
-                self._send_json(
-                    HTTPStatus.UNAUTHORIZED,
-                    {"error": "invalid_token"},
-                    {"WWW-Authenticate": 'Bearer error="invalid_token"'},
-                )
-                return False, None
-            required = getattr(auth, "required_scopes", None) or []
-            if required and not set(required) <= set(getattr(access, "scopes", [])):
+            outcome, value = authorize_request(
+                manager.server.auth, self.headers.get("Authorization")
+            )
+            if outcome == "ok":
+                return True, value
+            if outcome == "forbidden":
                 self._send_json(
                     HTTPStatus.FORBIDDEN,
-                    {"error": "insufficient_scope", "required_scopes": required},
+                    {"error": "insufficient_scope", "required_scopes": value},
                 )
                 return False, None
-            return True, access
+            detail = "missing bearer token" if outcome == "missing" else "invalid_token"
+            challenge = "Bearer" if outcome == "missing" else 'Bearer error="invalid_token"'
+            self._send_json(
+                HTTPStatus.UNAUTHORIZED, {"error": detail}, {"WWW-Authenticate": challenge}
+            )
+            return False, None
 
         def _custom_route(self) -> bool:
             """Dispatch a registered custom route; return True if one handled it."""
