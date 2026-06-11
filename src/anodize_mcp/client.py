@@ -23,6 +23,7 @@ import threading
 from queue import Queue
 from typing import Any, Callable, Optional, Union
 
+from .attrdict import wrap as _wrap
 from .protocol import (
     LATEST_PROTOCOL_VERSION,
     make_error,
@@ -40,32 +41,6 @@ class ClientError(Exception):
         self.data = data
 
 
-class AttrDict(dict):
-    """A dict whose keys are also reachable as attributes.
-
-    Wire results are JSON objects (dicts), but FastMCP hands back typed objects
-    callers read with attribute access (``tool.name``). Subclassing ``dict``
-    keeps ``result["name"]`` and equality with plain dicts working while adding
-    ``result.name``.
-    """
-
-    def __getattr__(self, name: str) -> Any:
-        try:
-            return _wrap(self[name])
-        except KeyError:
-            raise AttributeError(name) from None
-
-
-def _wrap(value: Any) -> Any:
-    if isinstance(value, AttrDict):
-        return value
-    if isinstance(value, dict):
-        return AttrDict(value)
-    if isinstance(value, list):
-        return [_wrap(item) for item in value]
-    return value
-
-
 class CallToolResult:
     """The result of ``call_tool``; field names follow FastMCP."""
 
@@ -73,10 +48,17 @@ class CallToolResult:
         self.content: list[Any] = _wrap(raw.get("content", []))
         self.structured_content: Optional[Any] = _wrap(raw.get("structuredContent"))
         self.is_error: bool = raw.get("isError", False)
+        self.meta: Optional[Any] = _wrap(raw.get("_meta"))
+        self._wrapped: bool = bool((raw.get("_meta") or {}).get("fastmcp", {}).get("wrap_result"))
 
     @property
-    def data(self) -> Optional[dict[str, Any]]:
-        return self.structured_content
+    def data(self) -> Any:
+        # A non-object return is carried as {"result": value} and flagged in
+        # _meta; unwrap it back to the original value, matching FastMCP's .data.
+        sc = self.structured_content
+        if isinstance(sc, dict) and self._wrapped:
+            return sc.get("result")
+        return sc
 
     @property
     def text(self) -> Optional[str]:
@@ -183,7 +165,9 @@ class Client:
         client_info: Optional[dict[str, Any]] = None,
         timeout: float = 30.0,
         env: Optional[dict[str, str]] = None,
+        auto_initialize: bool = True,
     ):
+        self._auto_initialize = auto_initialize
         self._transport = _make_transport(target if transport is None else transport, env)
         self._sampling_handler = sampling_handler
         self._elicitation_handler = elicitation_handler
@@ -203,8 +187,15 @@ class Client:
         self._loop = asyncio.get_event_loop()
         self._transport.start(self._outbox)
         self._reader_task = asyncio.create_task(self._read_loop())
-        await self._initialize()
+        if self._auto_initialize:
+            await self._initialize()
         return self
+
+    async def initialize(self) -> Any:
+        """Run the initialize handshake explicitly (for ``auto_initialize=False``)."""
+        if self.initialize_result is None:
+            await self._initialize()
+        return self.initialize_result
 
     async def __aexit__(self, *exc: Any) -> None:
         await self.close()
@@ -301,13 +292,15 @@ class Client:
             capabilities["elicitation"] = {}
         if self._roots is not None:
             capabilities["roots"] = {"listChanged": False}
-        self.initialize_result = await self._request(
-            "initialize",
-            {
-                "protocolVersion": LATEST_PROTOCOL_VERSION,
-                "capabilities": capabilities,
-                "clientInfo": self._client_info,
-            },
+        self.initialize_result = _wrap(
+            await self._request(
+                "initialize",
+                {
+                    "protocolVersion": LATEST_PROTOCOL_VERSION,
+                    "capabilities": capabilities,
+                    "clientInfo": self._client_info,
+                },
+            )
         )
         await self._notify("notifications/initialized")
 
@@ -323,12 +316,27 @@ class Client:
 
     # -- public API -------------------------------------------------------
 
+    def is_connected(self) -> bool:
+        return self._reader_task is not None and not self._reader_task.done()
+
     async def ping(self) -> bool:
         await self._request("ping")
         return True
 
+    @staticmethod
+    def _tool_params(
+        name: str, arguments: Optional[dict[str, Any]], meta: Optional[dict[str, Any]]
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {"name": name, "arguments": arguments or {}}
+        if meta is not None:
+            params["_meta"] = meta
+        return params
+
     async def list_tools(self) -> list[dict[str, Any]]:
         return await self._list_all("tools/list", "tools")
+
+    async def list_tools_mcp(self) -> Any:
+        return _wrap(await self._request("tools/list", {}))
 
     async def call_tool(
         self,
@@ -336,36 +344,58 @@ class Client:
         arguments: Optional[dict[str, Any]] = None,
         *,
         raise_on_error: bool = True,
+        meta: Optional[dict[str, Any]] = None,
     ) -> CallToolResult:
         result = CallToolResult(
-            await self._request("tools/call", {"name": name, "arguments": arguments or {}})
+            await self._request("tools/call", self._tool_params(name, arguments, meta))
         )
         if result.is_error and raise_on_error:
             raise ClientError(result.text or f"Tool {name!r} returned an error")
         return result
 
-    async def call_tool_mcp(self, name: str, arguments: Optional[dict[str, Any]] = None) -> Any:
+    async def call_tool_mcp(
+        self,
+        name: str,
+        arguments: Optional[dict[str, Any]] = None,
+        *,
+        meta: Optional[dict[str, Any]] = None,
+    ) -> Any:
         """Call a tool and return the raw result without raising on ``isError``."""
-        return _wrap(
-            await self._request("tools/call", {"name": name, "arguments": arguments or {}})
-        )
+        return _wrap(await self._request("tools/call", self._tool_params(name, arguments, meta)))
 
     async def list_resources(self) -> list[dict[str, Any]]:
         return await self._list_all("resources/list", "resources")
 
+    async def list_resources_mcp(self) -> Any:
+        return _wrap(await self._request("resources/list", {}))
+
     async def list_resource_templates(self) -> list[dict[str, Any]]:
         return await self._list_all("resources/templates/list", "resourceTemplates")
+
+    async def list_resource_templates_mcp(self) -> Any:
+        return _wrap(await self._request("resources/templates/list", {}))
 
     async def read_resource(self, uri: str) -> list[dict[str, Any]]:
         result = await self._request("resources/read", {"uri": uri})
         return [_wrap(item) for item in result["contents"]]
 
+    async def read_resource_mcp(self, uri: str) -> Any:
+        return _wrap(await self._request("resources/read", {"uri": uri}))
+
     async def list_prompts(self) -> list[dict[str, Any]]:
         return await self._list_all("prompts/list", "prompts")
+
+    async def list_prompts_mcp(self) -> Any:
+        return _wrap(await self._request("prompts/list", {}))
 
     async def get_prompt(
         self, name: str, arguments: Optional[dict[str, Any]] = None
     ) -> dict[str, Any]:
+        return _wrap(
+            await self._request("prompts/get", {"name": name, "arguments": arguments or {}})
+        )
+
+    async def get_prompt_mcp(self, name: str, arguments: Optional[dict[str, Any]] = None) -> Any:
         return _wrap(
             await self._request("prompts/get", {"name": name, "arguments": arguments or {}})
         )

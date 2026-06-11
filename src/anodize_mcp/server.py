@@ -15,6 +15,7 @@ from typing import Any, Callable, Optional, TypeVar
 from . import _compat
 from ._asyncrun import run_coro, run_maybe_async
 from ._deferred import defer
+from .attrdict import wrap as attr_wrap
 from .clientfeatures import CompletionResult
 from .content import (
     is_content_value,
@@ -133,6 +134,7 @@ class AnodizeMCP:
         description: Optional[str] = None,
         annotations: Optional[dict[str, Any]] = None,
         tags: Any = None,
+        meta: Optional[dict[str, Any]] = None,
     ) -> Any:
         """Register a function as a tool.
 
@@ -155,8 +157,10 @@ class AnodizeMCP:
                 description=description or _docstring(func),
                 output_schema=out_schema,
                 wrap_output=wrap,
-                annotations=annotations,
+                annotations=_normalize_annotations(annotations),
                 context_param=context_param,
+                tags=tags,
+                meta=meta,
             )
             return func
 
@@ -177,6 +181,7 @@ class AnodizeMCP:
         size: Optional[int] = None,
         annotations: Optional[dict[str, Any]] = None,
         tags: Any = None,
+        meta: Optional[dict[str, Any]] = None,
     ) -> Callable[[F], F]:
         """Register a function as a resource or, if ``uri`` has ``{vars}``, a template."""
 
@@ -197,6 +202,8 @@ class AnodizeMCP:
                         description=desc,
                         mime_type=mime_type,
                         context_param=context_param,
+                        tags=tags,
+                        meta=meta,
                     )
                 )
             else:
@@ -209,8 +216,10 @@ class AnodizeMCP:
                     description=desc,
                     mime_type=mime_type,
                     size=size,
-                    annotations=annotations,
+                    annotations=_normalize_annotations(annotations),
                     context_param=context_param,
+                    tags=tags,
+                    meta=meta,
                 )
             return func
 
@@ -224,6 +233,7 @@ class AnodizeMCP:
         title: Optional[str] = None,
         description: Optional[str] = None,
         tags: Any = None,
+        meta: Optional[dict[str, Any]] = None,
     ) -> Any:
         """Register a function as a prompt."""
 
@@ -248,6 +258,8 @@ class AnodizeMCP:
                 title=title,
                 description=description or _docstring(func),
                 context_param=context_param,
+                tags=tags,
+                meta=meta,
             )
             return func
 
@@ -327,16 +339,22 @@ class AnodizeMCP:
     # ------------------------------------------------------------------
 
     def list_tools(self) -> Any:
-        return defer([t.describe() for t in self._tools.values() if t.name not in self._disabled])
+        return defer(
+            [attr_wrap(t.describe()) for t in self._tools.values() if t.name not in self._disabled]
+        )
 
     def list_resources(self) -> Any:
-        return defer([r.describe() for r in self._resources.values()])
+        return defer([attr_wrap(r.describe()) for r in self._resources.values()])
 
     def list_resource_templates(self) -> Any:
-        return defer([t.describe() for t in self._templates])
+        return defer([attr_wrap(t.describe()) for t in self._templates])
 
     def list_prompts(self) -> Any:
-        return defer([p.describe() for p in self._prompts.values()])
+        return defer([attr_wrap(p.describe()) for p in self._prompts.values()])
+
+    async def _list_tools_mcp(self, request: Any = None) -> Any:
+        tools = [t.describe() for t in self._tools.values() if t.name not in self._disabled]
+        return attr_wrap({"tools": tools})
 
     def get_tool(self, name: str) -> Optional[ToolDef]:
         return self._tools.get(name)
@@ -584,9 +602,8 @@ class AnodizeMCP:
             "protocolVersion": session.protocol_version,
             "capabilities": self._capabilities(),
             "serverInfo": server_info,
+            "instructions": self.instructions,
         }
-        if self.instructions is not None:
-            result["instructions"] = self.instructions
         return result
 
     def _capabilities(self) -> dict[str, Any]:
@@ -633,7 +650,13 @@ class AnodizeMCP:
         result: dict[str, Any] = {"content": content, "isError": False}
         if tool.output_schema is not None and value is not None and not is_content_value(value):
             payload = to_jsonable(value)
-            result["structuredContent"] = {"result": payload} if tool.wrap_output else payload
+            if tool.wrap_output:
+                result["structuredContent"] = {"result": payload}
+                # Mark the synthetic wrapper so the client unwraps .data back to
+                # the original value, matching FastMCP.
+                result["_meta"] = {"fastmcp": {"wrap_result": True}}
+            else:
+                result["structuredContent"] = payload
         return result
 
     @staticmethod
@@ -872,6 +895,21 @@ Anodize = AnodizeMCP
 # switch to `from fastmcp import FastMCP` once a Rust toolchain is available,
 # changing only the import line.
 FastMCP = AnodizeMCP
+
+
+def _normalize_annotations(annotations: Any) -> Optional[dict[str, Any]]:
+    """Coerce annotations (a dict or any model-like object) to a plain dict.
+
+    FastMCP callers may pass an ``mcp.types.ToolAnnotations``; reduce it to a dict
+    so it serializes over the wire without the SDK.
+    """
+    if annotations is None or isinstance(annotations, dict):
+        return annotations
+    if hasattr(annotations, "model_dump"):
+        return annotations.model_dump(exclude_none=True)
+    if hasattr(annotations, "__dict__"):
+        return {k: v for k, v in vars(annotations).items() if v is not None}
+    return dict(annotations)
 
 
 def _find_context_param(func: Callable[..., Any]) -> Optional[str]:

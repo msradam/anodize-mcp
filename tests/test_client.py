@@ -73,7 +73,7 @@ class InMemoryClientTest(unittest.IsolatedAsyncioTestCase):
 
             r = await c.call_tool("add", {"a": 2, "b": 3})
             self.assertEqual(r.text, "5")
-            self.assertEqual(r.data, {"result": 5})
+            self.assertEqual(r.data, 5)
             self.assertFalse(r.is_error)
 
     async def test_structured_output(self):

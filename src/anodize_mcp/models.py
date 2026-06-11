@@ -9,6 +9,20 @@ from typing import Any, Callable, Optional
 from .schema import ParamSpec
 
 
+def build_meta(meta: Optional[dict[str, Any]], tags: Any) -> Optional[dict[str, Any]]:
+    """Combine user-supplied metadata with tags under the ``fastmcp`` key.
+
+    Matches FastMCP, which surfaces a component's tags at
+    ``_meta["fastmcp"]["tags"]`` while preserving any caller metadata.
+    """
+    out = dict(meta) if meta else {}
+    if tags:
+        fastmcp = dict(out.get("fastmcp") or {})
+        fastmcp["tags"] = sorted(tags)
+        out["fastmcp"] = fastmcp
+    return out or None
+
+
 @dataclass
 class ToolDef:
     name: str
@@ -21,6 +35,8 @@ class ToolDef:
     wrap_output: bool = False
     annotations: Optional[dict[str, Any]] = None
     context_param: Optional[str] = None
+    tags: Any = None
+    meta: Optional[dict[str, Any]] = None
 
     def describe(self) -> dict[str, Any]:
         out: dict[str, Any] = {"name": self.name, "inputSchema": self.input_schema}
@@ -32,6 +48,9 @@ class ToolDef:
             out["outputSchema"] = self.output_schema
         if self.annotations:
             out["annotations"] = self.annotations
+        meta = build_meta(self.meta, self.tags)
+        if meta:
+            out["_meta"] = meta
         return out
 
 
@@ -46,6 +65,8 @@ class ResourceDef:
     size: Optional[int] = None
     annotations: Optional[dict[str, Any]] = None
     context_param: Optional[str] = None
+    tags: Any = None
+    meta: Optional[dict[str, Any]] = None
 
     def describe(self) -> dict[str, Any]:
         out: dict[str, Any] = {"uri": self.uri, "name": self.name}
@@ -59,6 +80,9 @@ class ResourceDef:
             out["size"] = self.size
         if self.annotations:
             out["annotations"] = self.annotations
+        meta = build_meta(self.meta, self.tags)
+        if meta:
+            out["_meta"] = meta
         return out
 
 
@@ -73,6 +97,8 @@ class ResourceTemplateDef:
     description: Optional[str] = None
     mime_type: Optional[str] = None
     context_param: Optional[str] = None
+    tags: Any = None
+    meta: Optional[dict[str, Any]] = None
 
     def describe(self) -> dict[str, Any]:
         out: dict[str, Any] = {"uriTemplate": self.uri_template, "name": self.name}
@@ -82,6 +108,9 @@ class ResourceTemplateDef:
             out["description"] = self.description
         if self.mime_type is not None:
             out["mimeType"] = self.mime_type
+        meta = build_meta(self.meta, self.tags)
+        if meta:
+            out["_meta"] = meta
         return out
 
     def match(self, uri: str) -> Optional[dict[str, str]]:
@@ -115,6 +144,8 @@ class PromptDef:
     title: Optional[str] = None
     description: Optional[str] = None
     context_param: Optional[str] = None
+    tags: Any = None
+    meta: Optional[dict[str, Any]] = None
 
     def describe(self) -> dict[str, Any]:
         out: dict[str, Any] = {"name": self.name}
@@ -124,6 +155,9 @@ class PromptDef:
             out["description"] = self.description
         if self.arguments:
             out["arguments"] = [a.describe() for a in self.arguments]
+        meta = build_meta(self.meta, self.tags)
+        if meta:
+            out["_meta"] = meta
         return out
 
 
