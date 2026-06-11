@@ -48,7 +48,7 @@ from .content import (
     TextContent,
 )
 from .exceptions import McpError, NotFoundError, ResourceError, ToolError
-from .models import PromptMessage
+from .prompts import PromptMessage
 from .protocol import LATEST_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS
 from .routes import Request, Response
 from .schema import Field

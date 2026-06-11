@@ -32,16 +32,8 @@ from ..exceptions import (
     ResourceError,
     ToolError,
 )
-from ..models import (
-    PromptArgument,
-    PromptDef,
-    ResourceDef,
-    ResourceTemplateDef,
-    ToolDef,
-    compile_uri_template,
-    normalize_prompt_result,
-)
 from ..pagination import paginate
+from ..prompts.prompt import PromptArgument, PromptDef, normalize_prompt_result
 from ..protocol import (
     LATEST_PROTOCOL_VERSION,
     SUPPORTED_PROTOCOL_VERSIONS,
@@ -49,6 +41,8 @@ from ..protocol import (
     make_notification,
     make_response,
 )
+from ..resources.resource import ResourceDef
+from ..resources.template import ResourceTemplateDef, compile_uri_template
 from ..schema import (
     build_input_schema,
     build_params,
@@ -57,6 +51,7 @@ from ..schema import (
     output_schema_for,
 )
 from ..session import LOG_LEVELS, Session
+from ..tools.tool import ToolDef
 from .context import Context
 
 F = TypeVar("F", bound=Callable[..., Any])
