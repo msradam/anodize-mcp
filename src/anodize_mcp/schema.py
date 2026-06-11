@@ -508,7 +508,7 @@ def _coerce(value: Any, tp: Any, path: str) -> Any:
     if tp is type(None):
         if value is None:
             return None
-        raise InvalidParams(f"{path}: expected null")
+        raise InvalidParams(f"{path}: invalid, expected null")
 
     if isinstance(tp, type) and issubclass(tp, enum.Enum):
         return _coerce_enum(value, tp, path)
@@ -530,7 +530,7 @@ def _coerce(value: Any, tp: Any, path: str) -> Any:
     if tp is str:
         if isinstance(value, str):
             return value
-        raise InvalidParams(f"{path}: expected string")
+        raise InvalidParams(f"{path}: invalid, expected string")
     if tp is bytes:
         return _coerce_bytes(value, path)
     if tp is Decimal:
@@ -544,7 +544,7 @@ def _coerce(value: Any, tp: Any, path: str) -> Any:
 
     if origin in (list, set, frozenset):
         if not isinstance(value, list):
-            raise InvalidParams(f"{path}: expected array")
+            raise InvalidParams(f"{path}: invalid, expected array")
         args = _compat.get_args(tp)
         item_type = args[0] if args else Any
         items = [_coerce(v, item_type, f"{path}[{i}]") for i, v in enumerate(value)]
@@ -556,19 +556,19 @@ def _coerce(value: Any, tp: Any, path: str) -> Any:
 
     if origin is tuple:
         if not isinstance(value, list):
-            raise InvalidParams(f"{path}: expected array")
+            raise InvalidParams(f"{path}: invalid, expected array")
         args = _compat.get_args(tp)
         if len(args) == 2 and args[1] is Ellipsis:
             return tuple(_coerce(v, args[0], f"{path}[{i}]") for i, v in enumerate(value))
         if args:
             if len(value) != len(args):
-                raise InvalidParams(f"{path}: expected {len(args)} items")
+                raise InvalidParams(f"{path}: invalid, expected {len(args)} items")
             return tuple(_coerce(v, a, f"{path}[{i}]") for i, (v, a) in enumerate(zip(value, args)))
         return tuple(value)
 
     if origin is dict:
         if not isinstance(value, dict):
-            raise InvalidParams(f"{path}: expected object")
+            raise InvalidParams(f"{path}: invalid, expected object")
         args = _compat.get_args(tp)
         if len(args) == 2:
             return {k: _coerce(v, args[1], f"{path}.{k}") for k, v in value.items()}
@@ -592,12 +592,12 @@ def _coerce_bool(value: Any, path: str) -> bool:
                 return True
             if low in ("false", "0", "no"):
                 return False
-    raise InvalidParams(f"{path}: expected boolean")
+    raise InvalidParams(f"{path}: invalid, expected boolean")
 
 
 def _coerce_int(value: Any, path: str) -> int:
     if isinstance(value, bool):
-        raise InvalidParams(f"{path}: expected integer, got boolean")
+        raise InvalidParams(f"{path}: invalid, expected integer, got boolean")
     if isinstance(value, int):
         return value
     if not _strict.get():
@@ -608,12 +608,12 @@ def _coerce_int(value: Any, path: str) -> int:
                 return int(value.strip())
             except ValueError:
                 pass
-    raise InvalidParams(f"{path}: expected integer")
+    raise InvalidParams(f"{path}: invalid, expected integer")
 
 
 def _coerce_float(value: Any, path: str) -> float:
     if isinstance(value, bool):
-        raise InvalidParams(f"{path}: expected number, got boolean")
+        raise InvalidParams(f"{path}: invalid, expected number, got boolean")
     if isinstance(value, (int, float)):
         return float(value)
     if not _strict.get() and isinstance(value, str):
@@ -621,7 +621,7 @@ def _coerce_float(value: Any, path: str) -> float:
             return float(value.strip())
         except ValueError:
             pass
-    raise InvalidParams(f"{path}: expected number")
+    raise InvalidParams(f"{path}: invalid, expected number")
 
 
 def _coerce_bytes(value: Any, path: str) -> bytes:
@@ -633,15 +633,15 @@ def _coerce_bytes(value: Any, path: str) -> bytes:
         try:
             return base64.b64decode(value, validate=True)
         except Exception as exc:  # noqa: BLE001
-            raise InvalidParams(f"{path}: expected base64 string") from exc
-    raise InvalidParams(f"{path}: expected base64 string")
+            raise InvalidParams(f"{path}: invalid, expected base64 string") from exc
+    raise InvalidParams(f"{path}: invalid, expected base64 string")
 
 
 def _coerce_decimal(value: Any, path: str) -> Decimal:
     try:
         return Decimal(str(value))
     except (InvalidOperation, ValueError) as exc:
-        raise InvalidParams(f"{path}: expected decimal") from exc
+        raise InvalidParams(f"{path}: invalid, expected decimal") from exc
 
 
 def _coerce_datetime(value: Any, path: str) -> _dt.datetime:
@@ -651,8 +651,8 @@ def _coerce_datetime(value: Any, path: str) -> _dt.datetime:
         try:
             return _dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
         except ValueError as exc:
-            raise InvalidParams(f"{path}: expected ISO-8601 datetime") from exc
-    raise InvalidParams(f"{path}: expected ISO-8601 datetime")
+            raise InvalidParams(f"{path}: invalid, expected ISO-8601 datetime") from exc
+    raise InvalidParams(f"{path}: invalid, expected ISO-8601 datetime")
 
 
 def _coerce_date(value: Any, path: str) -> _dt.date:
@@ -662,8 +662,8 @@ def _coerce_date(value: Any, path: str) -> _dt.date:
         try:
             return _dt.date.fromisoformat(value)
         except ValueError as exc:
-            raise InvalidParams(f"{path}: expected ISO-8601 date") from exc
-    raise InvalidParams(f"{path}: expected ISO-8601 date")
+            raise InvalidParams(f"{path}: invalid, expected ISO-8601 date") from exc
+    raise InvalidParams(f"{path}: invalid, expected ISO-8601 date")
 
 
 def _coerce_uuid(value: Any, path: str) -> uuid.UUID:
@@ -673,8 +673,8 @@ def _coerce_uuid(value: Any, path: str) -> uuid.UUID:
         try:
             return uuid.UUID(value)
         except ValueError as exc:
-            raise InvalidParams(f"{path}: expected UUID") from exc
-    raise InvalidParams(f"{path}: expected UUID")
+            raise InvalidParams(f"{path}: invalid, expected UUID") from exc
+    raise InvalidParams(f"{path}: invalid, expected UUID")
 
 
 def _coerce_enum(value: Any, tp: type[enum.Enum], path: str) -> Any:
@@ -691,7 +691,7 @@ def _coerce_dataclass(value: Any, tp: type, path: str) -> Any:
     if isinstance(value, tp):
         return value
     if not isinstance(value, dict):
-        raise InvalidParams(f"{path}: expected object")
+        raise InvalidParams(f"{path}: invalid, expected object")
     hints = _compat.get_type_hints(tp)
     kwargs: dict[str, Any] = {}
     for f in dataclasses.fields(tp):

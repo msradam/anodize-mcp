@@ -304,15 +304,24 @@ class Client:
         )
         await self._notify("notifications/initialized")
 
-    async def _list_all(self, method: str, key: str) -> list[dict[str, Any]]:
+    async def _list_all(
+        self, method: str, key: str, max_pages: Optional[int] = None
+    ) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
         cursor: Optional[str] = None
+        pages = 0
         while True:
             result = await self._request(method, {"cursor": cursor} if cursor else {})
             items.extend(result.get(key, []))
             cursor = result.get("nextCursor")
-            if not cursor:
+            pages += 1
+            if not cursor or (max_pages is not None and pages >= max_pages):
                 return [_wrap(item) for item in items]
+
+    async def _list_page(self, method: str, cursor: Optional[str]) -> Any:
+        raw = await self._request(method, {"cursor": cursor} if cursor else {})
+        raw.setdefault("nextCursor", None)
+        return _wrap(raw)
 
     # -- public API -------------------------------------------------------
 
@@ -332,11 +341,11 @@ class Client:
             params["_meta"] = meta
         return params
 
-    async def list_tools(self) -> list[dict[str, Any]]:
-        return await self._list_all("tools/list", "tools")
+    async def list_tools(self, *, max_pages: Optional[int] = None) -> list[dict[str, Any]]:
+        return await self._list_all("tools/list", "tools", max_pages)
 
-    async def list_tools_mcp(self) -> Any:
-        return _wrap(await self._request("tools/list", {}))
+    async def list_tools_mcp(self, cursor: Optional[str] = None) -> Any:
+        return await self._list_page("tools/list", cursor)
 
     async def call_tool(
         self,
@@ -363,17 +372,19 @@ class Client:
         """Call a tool and return the raw result without raising on ``isError``."""
         return _wrap(await self._request("tools/call", self._tool_params(name, arguments, meta)))
 
-    async def list_resources(self) -> list[dict[str, Any]]:
-        return await self._list_all("resources/list", "resources")
+    async def list_resources(self, *, max_pages: Optional[int] = None) -> list[dict[str, Any]]:
+        return await self._list_all("resources/list", "resources", max_pages)
 
-    async def list_resources_mcp(self) -> Any:
-        return _wrap(await self._request("resources/list", {}))
+    async def list_resources_mcp(self, cursor: Optional[str] = None) -> Any:
+        return await self._list_page("resources/list", cursor)
 
-    async def list_resource_templates(self) -> list[dict[str, Any]]:
-        return await self._list_all("resources/templates/list", "resourceTemplates")
+    async def list_resource_templates(
+        self, *, max_pages: Optional[int] = None
+    ) -> list[dict[str, Any]]:
+        return await self._list_all("resources/templates/list", "resourceTemplates", max_pages)
 
-    async def list_resource_templates_mcp(self) -> Any:
-        return _wrap(await self._request("resources/templates/list", {}))
+    async def list_resource_templates_mcp(self, cursor: Optional[str] = None) -> Any:
+        return await self._list_page("resources/templates/list", cursor)
 
     async def read_resource(self, uri: str) -> list[dict[str, Any]]:
         result = await self._request("resources/read", {"uri": uri})
@@ -382,11 +393,11 @@ class Client:
     async def read_resource_mcp(self, uri: str) -> Any:
         return _wrap(await self._request("resources/read", {"uri": uri}))
 
-    async def list_prompts(self) -> list[dict[str, Any]]:
-        return await self._list_all("prompts/list", "prompts")
+    async def list_prompts(self, *, max_pages: Optional[int] = None) -> list[dict[str, Any]]:
+        return await self._list_all("prompts/list", "prompts", max_pages)
 
-    async def list_prompts_mcp(self) -> Any:
-        return _wrap(await self._request("prompts/list", {}))
+    async def list_prompts_mcp(self, cursor: Optional[str] = None) -> Any:
+        return await self._list_page("prompts/list", cursor)
 
     async def get_prompt(
         self, name: str, arguments: Optional[dict[str, Any]] = None
