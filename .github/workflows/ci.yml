@@ -33,3 +33,26 @@ jobs:
         run: uvx ruff check .
       - name: Mypy
         run: uvx mypy
+
+  conformance:
+    # Runs FastMCP's own deterministic tests against anodize. Needs fastmcp
+    # (and therefore Rust), so it runs only here, never on z/OS.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Clone FastMCP test suite (pinned)
+        run: |
+          git clone https://github.com/jlowin/fastmcp /tmp/fastmcp-src
+          git -C /tmp/fastmcp-src checkout 3b8538e
+      - name: FastMCP's deterministic tests, run against anodize
+        run: >
+          PYTHONPATH=src:conformance
+          uv run --python 3.12
+          --with "fastmcp==3.4.2" --with pytest --with pytest-asyncio
+          --with opentelemetry-sdk --with opentelemetry-api
+          --with dirty-equals --with inline-snapshot
+          python -m pytest -p aliasplugin
+          /tmp/fastmcp-src/tests/server/middleware/test_rate_limiting.py
+          -k "not Integration" -o asyncio_mode=auto -W ignore

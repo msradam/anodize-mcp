@@ -52,11 +52,18 @@ from .exceptions import McpError, ResourceError, ToolError
 from .middleware import Middleware, MiddlewareContext
 from .models import PromptMessage
 from .protocol import LATEST_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS
+from .ratelimit import (
+    RateLimitError,
+    RateLimitingMiddleware,
+    SlidingWindowRateLimiter,
+    SlidingWindowRateLimitingMiddleware,
+    TokenBucketRateLimiter,
+)
 from .routes import Request, Response
 from .schema import Field
 from .server import Anodize, AnodizeMCP, FastMCP
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 __all__ = [
     "AnodizeMCP",
@@ -88,6 +95,11 @@ __all__ = [
     "Request",
     "Response",
     "RequestContext",
+    "RateLimitingMiddleware",
+    "SlidingWindowRateLimitingMiddleware",
+    "TokenBucketRateLimiter",
+    "SlidingWindowRateLimiter",
+    "RateLimitError",
     "Client",
     "ClientError",
     "CallToolResult",

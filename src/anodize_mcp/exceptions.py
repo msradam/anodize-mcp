@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Optional
 
 # Standard JSON-RPC 2.0 error codes.
@@ -13,6 +14,15 @@ INTERNAL_ERROR = -32603
 
 # MCP-specific code for a resource that could not be found.
 RESOURCE_NOT_FOUND = -32002
+
+
+@dataclass
+class ErrorData:
+    """The structured payload of a JSON-RPC error, mirroring ``mcp.types.ErrorData``."""
+
+    code: int
+    message: str
+    data: Any = None
 
 
 class McpError(Exception):
@@ -27,6 +37,11 @@ class McpError(Exception):
         self.code = code
         self.message = message
         self.data = data
+
+    @property
+    def error(self) -> ErrorData:
+        """The error as a structured object, matching the SDK's ``McpError.error``."""
+        return ErrorData(self.code, self.message, self.data)
 
     def to_dict(self) -> dict[str, Any]:
         err: dict[str, Any] = {"code": self.code, "message": self.message}
