@@ -9,6 +9,7 @@ deliberately small; it is not a general JSON Schema engine.
 
 from __future__ import annotations
 
+import contextvars
 import dataclasses
 import datetime as _dt
 import enum
@@ -23,6 +24,10 @@ from . import _compat
 from .exceptions import InvalidParams
 
 _UNSET: Any = object()
+
+# When set, scalar coercers reject cross-type inputs (e.g. the string "10" for an
+# int parameter) instead of parsing them, matching FastMCP's strict_input_validation.
+_strict: contextvars.ContextVar[bool] = contextvars.ContextVar("strict_coercion", default=False)
 
 
 @dataclass
@@ -443,14 +448,26 @@ def output_schema_for(return_annotation: Any) -> tuple[Optional[dict[str, Any]],
 # ---------------------------------------------------------------------------
 
 
-def coerce_arguments(specs: list[ParamSpec], arguments: dict[str, Any]) -> dict[str, Any]:
+def coerce_arguments(
+    specs: list[ParamSpec], arguments: dict[str, Any], *, strict: bool = False
+) -> dict[str, Any]:
     """Validate and coerce a raw ``arguments`` dict against parameter specs.
 
-    Raises :class:`InvalidParams` on the first problem.
+    With ``strict``, scalar values are not parsed across types (the string
+    ``"10"`` is rejected for an ``int`` parameter). Raises
+    :class:`InvalidParams` on the first problem.
     """
     if not isinstance(arguments, dict):
         raise InvalidParams("arguments must be an object")
 
+    token = _strict.set(strict)
+    try:
+        return _coerce_arguments(specs, arguments)
+    finally:
+        _strict.reset(token)
+
+
+def _coerce_arguments(specs: list[ParamSpec], arguments: dict[str, Any]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for spec in specs:
         if spec.name in arguments:
@@ -566,14 +583,15 @@ def _coerce(value: Any, tp: Any, path: str) -> Any:
 def _coerce_bool(value: Any, path: str) -> bool:
     if isinstance(value, bool):
         return value
-    if isinstance(value, int) and value in (0, 1):
-        return bool(value)
-    if isinstance(value, str):
-        low = value.strip().lower()
-        if low in ("true", "1", "yes"):
-            return True
-        if low in ("false", "0", "no"):
-            return False
+    if not _strict.get():
+        if isinstance(value, int) and value in (0, 1):
+            return bool(value)
+        if isinstance(value, str):
+            low = value.strip().lower()
+            if low in ("true", "1", "yes"):
+                return True
+            if low in ("false", "0", "no"):
+                return False
     raise InvalidParams(f"{path}: expected boolean")
 
 
@@ -582,13 +600,14 @@ def _coerce_int(value: Any, path: str) -> int:
         raise InvalidParams(f"{path}: expected integer, got boolean")
     if isinstance(value, int):
         return value
-    if isinstance(value, float) and value.is_integer():
-        return int(value)
-    if isinstance(value, str):
-        try:
-            return int(value.strip())
-        except ValueError:
-            pass
+    if not _strict.get():
+        if isinstance(value, float) and value.is_integer():
+            return int(value)
+        if isinstance(value, str):
+            try:
+                return int(value.strip())
+            except ValueError:
+                pass
     raise InvalidParams(f"{path}: expected integer")
 
 
@@ -597,7 +616,7 @@ def _coerce_float(value: Any, path: str) -> float:
         raise InvalidParams(f"{path}: expected number, got boolean")
     if isinstance(value, (int, float)):
         return float(value)
-    if isinstance(value, str):
+    if not _strict.get() and isinstance(value, str):
         try:
             return float(value.strip())
         except ValueError:

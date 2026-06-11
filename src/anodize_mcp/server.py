@@ -72,18 +72,21 @@ class AnodizeMCP:
         instructions: Optional[str] = None,
         title: Optional[str] = None,
         page_size: int = 100,
+        list_page_size: Optional[int] = None,
         auth: Any = None,
         lifespan: Any = None,
         icons: Optional[list[dict[str, Any]]] = None,
         website_url: Optional[str] = None,
         on_duplicate: str = "warn",
         mask_error_details: bool = False,
+        strict_input_validation: bool = False,
     ):
         self.name = name
         self.version = version
         self.title = title
         self.instructions = instructions
-        self.page_size = page_size
+        # FastMCP names this list_page_size; accept either, preferring the explicit one.
+        self.page_size = list_page_size if list_page_size is not None else page_size
         # A token verifier (object with verify_token); enforced by the HTTP
         # transport only. stdio has no network boundary, so it is ignored there.
         self.auth = auth
@@ -93,6 +96,7 @@ class AnodizeMCP:
         # "warn" | "error" | "replace": what to do when a name is reused.
         self.on_duplicate = on_duplicate
         self.mask_error_details = mask_error_details
+        self.strict_input_validation = strict_input_validation
         self._tools: dict[str, ToolDef] = {}
         self._resources: dict[str, ResourceDef] = {}
         self._templates: list[ResourceTemplateDef] = []
@@ -609,7 +613,9 @@ class AnodizeMCP:
         progress_token = (params.get("_meta") or {}).get("progressToken")
 
         try:
-            coerced = coerce_arguments(tool.param_specs, arguments)
+            coerced = coerce_arguments(
+                tool.param_specs, arguments, strict=self.strict_input_validation
+            )
             if tool.context_param:
                 coerced[tool.context_param] = Context(
                     session, self, request_id, progress_token=progress_token

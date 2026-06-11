@@ -40,12 +40,38 @@ class ClientError(Exception):
         self.data = data
 
 
+class AttrDict(dict):
+    """A dict whose keys are also reachable as attributes.
+
+    Wire results are JSON objects (dicts), but FastMCP hands back typed objects
+    callers read with attribute access (``tool.name``). Subclassing ``dict``
+    keeps ``result["name"]`` and equality with plain dicts working while adding
+    ``result.name``.
+    """
+
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return _wrap(self[name])
+        except KeyError:
+            raise AttributeError(name) from None
+
+
+def _wrap(value: Any) -> Any:
+    if isinstance(value, AttrDict):
+        return value
+    if isinstance(value, dict):
+        return AttrDict(value)
+    if isinstance(value, list):
+        return [_wrap(item) for item in value]
+    return value
+
+
 class CallToolResult:
     """The result of ``call_tool``; field names follow FastMCP."""
 
     def __init__(self, raw: dict[str, Any]):
-        self.content: list[dict[str, Any]] = raw.get("content", [])
-        self.structured_content: Optional[dict[str, Any]] = raw.get("structuredContent")
+        self.content: list[Any] = _wrap(raw.get("content", []))
+        self.structured_content: Optional[Any] = _wrap(raw.get("structuredContent"))
         self.is_error: bool = raw.get("isError", False)
 
     @property
@@ -65,7 +91,14 @@ class CallToolResult:
 # ---------------------------------------------------------------------------
 
 
-class _MemoryTransport:
+class FastMCPTransport:
+    """In-memory transport that connects a client directly to a server.
+
+    Named to match ``fastmcp.client.transports.FastMCPTransport`` so FastMCP
+    code that wraps a server (``Client(transport=FastMCPTransport(server))``)
+    is a drop-in.
+    """
+
     def __init__(self, server: Any):
         self._server = server
         self._inbox: Queue[Any] = Queue()
@@ -123,7 +156,7 @@ class _StdioTransport:
 
 def _make_transport(target: Any, env: Optional[dict[str, str]]) -> Any:
     if hasattr(target, "handle_message") and hasattr(target, "new_session"):
-        return _MemoryTransport(target)
+        return FastMCPTransport(target)
     if isinstance(target, (list, tuple)):
         return _StdioTransport([str(x) for x in target], env=env)
     if hasattr(target, "start") and hasattr(target, "send") and hasattr(target, "close"):
@@ -139,8 +172,9 @@ def _make_transport(target: Any, env: Optional[dict[str, str]]) -> Any:
 class Client:
     def __init__(
         self,
-        target: Any,
+        target: Any = None,
         *,
+        transport: Any = None,
         sampling_handler: Optional[Callable[..., Any]] = None,
         elicitation_handler: Optional[Callable[..., Any]] = None,
         roots: Optional[Union[list[dict[str, Any]], Callable[[], Any]]] = None,
@@ -150,7 +184,7 @@ class Client:
         timeout: float = 30.0,
         env: Optional[dict[str, str]] = None,
     ):
-        self._transport = _make_transport(target, env)
+        self._transport = _make_transport(target if transport is None else transport, env)
         self._sampling_handler = sampling_handler
         self._elicitation_handler = elicitation_handler
         self._roots = roots
@@ -285,7 +319,7 @@ class Client:
             items.extend(result.get(key, []))
             cursor = result.get("nextCursor")
             if not cursor:
-                return items
+                return [_wrap(item) for item in items]
 
     # -- public API -------------------------------------------------------
 
@@ -297,9 +331,22 @@ class Client:
         return await self._list_all("tools/list", "tools")
 
     async def call_tool(
-        self, name: str, arguments: Optional[dict[str, Any]] = None
+        self,
+        name: str,
+        arguments: Optional[dict[str, Any]] = None,
+        *,
+        raise_on_error: bool = True,
     ) -> CallToolResult:
-        return CallToolResult(
+        result = CallToolResult(
+            await self._request("tools/call", {"name": name, "arguments": arguments or {}})
+        )
+        if result.is_error and raise_on_error:
+            raise ClientError(result.text or f"Tool {name!r} returned an error")
+        return result
+
+    async def call_tool_mcp(self, name: str, arguments: Optional[dict[str, Any]] = None) -> Any:
+        """Call a tool and return the raw result without raising on ``isError``."""
+        return _wrap(
             await self._request("tools/call", {"name": name, "arguments": arguments or {}})
         )
 
@@ -311,7 +358,7 @@ class Client:
 
     async def read_resource(self, uri: str) -> list[dict[str, Any]]:
         result = await self._request("resources/read", {"uri": uri})
-        return result["contents"]
+        return [_wrap(item) for item in result["contents"]]
 
     async def list_prompts(self) -> list[dict[str, Any]]:
         return await self._list_all("prompts/list", "prompts")
@@ -319,7 +366,9 @@ class Client:
     async def get_prompt(
         self, name: str, arguments: Optional[dict[str, Any]] = None
     ) -> dict[str, Any]:
-        return await self._request("prompts/get", {"name": name, "arguments": arguments or {}})
+        return _wrap(
+            await self._request("prompts/get", {"name": name, "arguments": arguments or {}})
+        )
 
     async def complete(
         self,
@@ -331,7 +380,7 @@ class Client:
         if context is not None:
             params["context"] = {"arguments": context}
         result = await self._request("completion/complete", params)
-        return result["completion"]
+        return _wrap(result["completion"])
 
     async def set_logging_level(self, level: str) -> None:
         await self._request("logging/setLevel", {"level": level})

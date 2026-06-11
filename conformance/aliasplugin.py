@@ -14,6 +14,7 @@ import sys
 def pytest_configure(config):
     import fastmcp
     import fastmcp.client
+    import fastmcp.client.transports
     import fastmcp.exceptions
     import fastmcp.server.server as server_module
 
@@ -26,6 +27,7 @@ def pytest_configure(config):
     server_module.FastMCP = anodize_mcp.AnodizeMCP
     fastmcp.Client = anodize_mcp.Client
     fastmcp.client.Client = anodize_mcp.Client
+    fastmcp.client.transports.FastMCPTransport = anodize_mcp.FastMCPTransport
 
     # At the client boundary FastMCP raises ToolError where anodize raises
     # ClientError; map them so error-path assertions resolve.

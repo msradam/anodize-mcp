@@ -83,8 +83,10 @@ class InMemoryClientTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_tool_error_and_unknown(self):
         async with Client(build_server()) as c:
-            r = await c.call_tool("boom", {})
+            r = await c.call_tool("boom", {}, raise_on_error=False)
             self.assertTrue(r.is_error)
+            with self.assertRaises(ClientError):
+                await c.call_tool("boom", {})
             with self.assertRaises(ClientError):
                 await c.call_tool("nope", {})
             with self.assertRaises(ClientError):

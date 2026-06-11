@@ -37,7 +37,7 @@ from .auth import (
     TokenVerifier,
     get_access_token,
 )
-from .client import CallToolResult, Client, ClientError
+from .client import CallToolResult, Client, ClientError, FastMCPTransport
 from .clientfeatures import CompletionResult, CreateMessageResult, ElicitResult, Root
 from .content import (
     AudioContent,
@@ -102,6 +102,7 @@ __all__ = [
     "RateLimitError",
     "Client",
     "ClientError",
+    "FastMCPTransport",
     "CallToolResult",
     "LATEST_PROTOCOL_VERSION",
     "SUPPORTED_PROTOCOL_VERSIONS",
