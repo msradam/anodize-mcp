@@ -146,6 +146,10 @@ class IntrospectionTest(unittest.TestCase):
 
 
 class ConstructorFlagTest(unittest.TestCase):
+    def test_name_defaults(self):
+        # FastMCP allows FastMCP() with no name.
+        self.assertEqual(AnodizeMCP().name, "AnodizeMCP")
+
     def test_on_duplicate_error(self):
         mcp = AnodizeMCP("d", on_duplicate="error")
         mcp.tool(name="x")(lambda: "1")

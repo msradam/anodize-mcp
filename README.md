@@ -125,6 +125,22 @@ The other expected difference is the negotiated protocol revision: AnodizeMCP
 implements `2025-06-18` and negotiates down gracefully if the client offers a
 newer one.
 
+### Conformance against FastMCP's own test suite
+
+As a parity check, FastMCP's tests can be pointed at AnodizeMCP by aliasing
+`fastmcp.FastMCP` and `fastmcp.Client` to the anodize equivalents (pytest loads
+plugins before test modules, so `from fastmcp import FastMCP` then resolves to
+AnodizeMCP). Run against FastMCP 3.x's `tests/tools`, `tests/resources`, and
+`tests/prompts` with only that alias and the optional `name`, **554 of 606 pass**.
+
+This is the tool/resource/prompt behavioral subset, not FastMCP's full suite
+(which also covers the CLI, OpenAPI generation, telemetry, and other features
+that are out of scope here). The 52 failures fall into three groups: features
+AnodizeMCP does not implement (per-tool `timeout`, the thread-offload API, tool
+transformation), tests that assert on the official `mcp` SDK result objects
+(AnodizeMCP's client returns dicts), and a small number of edge cases under
+review.
+
 ## Protocol coverage
 
 Implements MCP protocol revision `2025-06-18`.

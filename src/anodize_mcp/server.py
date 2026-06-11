@@ -66,7 +66,7 @@ _MAX_COMPLETION_VALUES = 100
 class AnodizeMCP:
     def __init__(
         self,
-        name: str,
+        name: str = "AnodizeMCP",
         version: str = "0.1.0",
         *,
         instructions: Optional[str] = None,
