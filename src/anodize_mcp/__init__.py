@@ -1,8 +1,9 @@
 """anodize: a lightweight, pure-Python MCP server framework.
 
-Standard library only, zero third-party dependencies, and no Rust toolchain
-required. That makes it usable wherever the official SDK's Rust-backed
-dependencies (pydantic-core) have no prebuilt wheel and cannot be compiled:
+Pure Python with no compiled extensions, so no Rust toolchain is required. Its
+dependencies (uvicorn and friends) are themselves pure Python. That makes it
+usable wherever the official SDK's Rust-backed dependencies (pydantic-core) have
+no prebuilt wheel and cannot be compiled:
 IBM mainframes (z/OS, Linux on Z / s390x), AIX, Solaris, the BSDs, exotic or
 older CPU architectures, WebAssembly (Pyodide), and locked-down or air-gapped
 build environments.
