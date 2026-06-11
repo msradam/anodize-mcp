@@ -17,6 +17,8 @@ def pytest_configure(config):
     import fastmcp.client.transports
     import fastmcp.exceptions
     import fastmcp.server.server as server_module
+    import mcp
+    import mcp.shared.exceptions
 
     import anodize_mcp
     import anodize_mcp.errorhandling
@@ -24,6 +26,13 @@ def pytest_configure(config):
     import anodize_mcp.middleware
     import anodize_mcp.ratelimit
     import anodize_mcp.timing
+
+    # Substitute anodize's pure-Python McpError so that isinstance() checks and
+    # error-path assertions resolve without the SDK. (mcp.types.* is deliberately
+    # not aliased: it would break FastMCP's own content pipeline, which builds
+    # real mcp.types objects.)
+    mcp.McpError = anodize_mcp.McpError
+    mcp.shared.exceptions.McpError = anodize_mcp.McpError
 
     # Server and client classes (both the top-level and submodule bindings).
     fastmcp.FastMCP = anodize_mcp.AnodizeMCP

@@ -24,6 +24,7 @@ from queue import Queue
 from typing import Any, Callable, Optional, Union
 
 from .attrdict import wrap as _wrap
+from .exceptions import INTERNAL_ERROR, McpError
 from .protocol import (
     LATEST_PROTOCOL_VERSION,
     make_error,
@@ -34,11 +35,15 @@ from .protocol import (
 from .transports.memory import SHUTDOWN, serve_memory
 
 
-class ClientError(Exception):
+class ClientError(McpError):
+    """A client-side request failure.
+
+    Subclasses :class:`McpError` so it is catchable as the SDK's ``McpError`` and
+    exposes the structured ``.error`` (code/message/data).
+    """
+
     def __init__(self, message: str, code: Optional[int] = None, data: Any = None):
-        super().__init__(message)
-        self.code = code
-        self.data = data
+        super().__init__(message, code=code if code is not None else INTERNAL_ERROR, data=data)
 
 
 class CallToolResult:
