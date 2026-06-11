@@ -100,8 +100,9 @@ FastMCP).
 
 ### What ports unchanged
 
-- `FastMCP(name, instructions=..., version=...)`; `@mcp.tool`, `@mcp.resource`, `@mcp.prompt` with `name`/`title`/`description`/`annotations`/`tags`; `add_tool`/`add_resource`/`add_prompt`
-- `ctx: Context` injection; `await ctx.debug/info/notice/warning/error(...)`, `ctx.log(message, level=...)`, `report_progress`, `read_resource`, `list_resources`, `list_prompts`, `get_prompt`, `get_state/set_state/delete_state`, `sample` (result `.text`), `elicit(message, dataclass)` (result `.action`/`.data`), `list_roots`; `ctx.session_id`/`client_id`/`request_id`
+- `FastMCP(name, instructions=..., version=..., lifespan=..., icons=..., website_url=..., on_duplicate=..., mask_error_details=..., auth=...)`; `@mcp.tool`, `@mcp.resource`, `@mcp.prompt` with `name`/`title`/`description`/`annotations`/`tags`; `add_tool`/`add_resource`/`add_prompt`
+- `@mcp.custom_route(path, methods=...)`, `mcp.add_middleware(...)`, `mcp.list_tools/list_resources/list_prompts/get_tool/get_prompt/call_tool/render_prompt`, `mcp.disable_tool/enable_tool`
+- `ctx: Context` injection; `await ctx.debug/info/notice/warning/error(...)`, `ctx.log(message, level=...)`, `report_progress`, `read_resource`, `list_resources`, `list_prompts`, `get_prompt`, `get_state/set_state/delete_state`, `send_notification`, `sample` (result `.text`), `elicit(message, dataclass)` (result `.action`/`.data`), `list_roots`; `ctx.session_id`/`client_id`/`request_id`/`fastmcp`/`transport`/`request_context.lifespan_context`/`access_token`
 - Parameter types: primitives, `Optional`/`Union`/`Literal`/`Enum`, `list`/`dict`/`set`/`tuple`, `datetime`/`date`/`UUID`/`Decimal`, dataclasses, and constraints via either anodize's `Field` or **`pydantic.Field`/`annotated_types`** (`Annotated[int, Field(ge=0)]` validates)
 - Return types: `str`, numbers, `dict`, `list`, dataclasses, `bytes`, `None`, and content blocks (`TextContent`, `ImageContent`, ...)
 - `mcp.run(transport="stdio"|"http", host=..., port=...)`
@@ -112,11 +113,11 @@ FastMCP).
 |---|---|
 | `pydantic.BaseModel` as a tool parameter | Use a `@dataclass` instead (BaseModel params are the one hard break) |
 | `from fastmcp.exceptions import ToolError` | `from anodize_mcp import ToolError` (one import line) |
-| `auth=` with a token verifier | Supported: `StaticTokenVerifier`, `JWTVerifier`, or a custom verifier (see Authentication) |
-| OAuth 2.1 server flow / hosted-IdP provider wrappers | Not supported; verify externally-issued tokens instead |
-| `mcp.mount` / `import_server` / server composition | Not supported |
-| `@mcp.custom_route`, middleware | Not supported |
+| `@mcp.custom_route` handler body | Decorator and `handler(request) -> response` shape match; the request/response objects are anodize's, not Starlette's |
+| OAuth 2.1 server flow / hosted-IdP provider wrappers | Not supported; verify externally-issued tokens with `auth=` instead |
+| `mcp.mount` / `import_server` / `as_proxy` / `from_openapi` | Not supported (server composition and generation) |
 | `@mcp.tool(task=True)` background tasks | Not supported |
+| `fastmcp.Client`, the `fastmcp` CLI | Not supported (anodize is server-only) |
 | `transport="sse"` (deprecated) | Raises a clear error; use `"http"` |
 
 The other expected difference is the negotiated protocol revision: AnodizeMCP
@@ -253,6 +254,55 @@ mcp = AnodizeMCP("demo", auth=JWTVerifier(jwks_uri="https://idp/.well-known/jwks
 ```
 
 The verifier is any object with `verify_token(token: str) -> AccessToken | None` and an optional `required_scopes`, so a custom verifier (LDAP, RACF, a database lookup) drops in. The OAuth 2.1 authorization-server flow and the hosted-IdP provider wrappers are out of scope; point those at your IdP and verify the tokens here.
+
+## Lifespan
+
+Run setup and teardown around the server with `lifespan`, a context manager whose yielded value is available to every handler. Synchronous and asynchronous context managers both work; synchronous resources are the clean case, an async resource bound to an event loop carries the usual cross-loop caveat since each handler runs on its own loop.
+
+```python
+import contextlib
+
+@contextlib.contextmanager
+def lifespan(server):
+    pool = open_connection_pool()
+    try:
+        yield {"pool": pool}
+    finally:
+        pool.close()
+
+mcp = AnodizeMCP("demo", lifespan=lifespan)
+
+@mcp.tool
+def query(sql: str, ctx: Context) -> list:
+    return ctx.request_context.lifespan_context["pool"].run(sql)
+```
+
+## Custom routes
+
+Register handlers at arbitrary HTTP paths for health checks, metrics, or OAuth callbacks. Custom routes bypass the MCP auth and Origin checks (HTTP transport only). A handler returns a `Response`, a `(status, body)` tuple, a `dict`/`list` (JSON), a `str`, or `bytes`.
+
+```python
+@mcp.custom_route("/health", methods=["GET"])
+def health(request):
+    return {"status": "ok"}
+```
+
+The decorator and the `handler(request) -> response` shape match FastMCP; the request and response objects are anodize's own (no Starlette dependency).
+
+## Middleware
+
+`add_middleware` wraps a chain of hooks around request dispatch. Hook names and the `(context, call_next)` shape match FastMCP. `on_message` runs for every request; per-operation hooks (`on_call_tool`, `on_read_resource`, `on_get_prompt`, ...) run nested inside for the matching method.
+
+```python
+from anodize_mcp import Middleware
+
+class Timing(Middleware):
+    async def on_call_tool(self, context, call_next):
+        result = await call_next(context)
+        return result
+
+mcp.add_middleware(Timing())
+```
 
 ## Dynamic changes
 

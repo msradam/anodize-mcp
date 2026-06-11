@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import contextlib
 import inspect
+import warnings
 import weakref
 from typing import Any, Callable, Optional, TypeVar
 
 from . import _compat
-from ._asyncrun import run_maybe_async
+from ._asyncrun import run_coro, run_maybe_async
+from ._deferred import defer
 from .clientfeatures import CompletionResult
 from .content import (
     is_content_value,
@@ -71,6 +73,11 @@ class AnodizeMCP:
         title: Optional[str] = None,
         page_size: int = 100,
         auth: Any = None,
+        lifespan: Any = None,
+        icons: Optional[list[dict[str, Any]]] = None,
+        website_url: Optional[str] = None,
+        on_duplicate: str = "warn",
+        mask_error_details: bool = False,
     ):
         self.name = name
         self.version = version
@@ -80,13 +87,34 @@ class AnodizeMCP:
         # A token verifier (object with verify_token); enforced by the HTTP
         # transport only. stdio has no network boundary, so it is ignored there.
         self.auth = auth
+        self.lifespan = lifespan
+        self.icons = icons
+        self.website_url = website_url
+        # "warn" | "error" | "replace": what to do when a name is reused.
+        self.on_duplicate = on_duplicate
+        self.mask_error_details = mask_error_details
         self._tools: dict[str, ToolDef] = {}
         self._resources: dict[str, ResourceDef] = {}
         self._templates: list[ResourceTemplateDef] = []
         self._prompts: dict[str, PromptDef] = {}
+        self._disabled: set[str] = set()
         # key is ("prompt", name) or ("resource", uri_template)
         self._completers: dict[tuple[str, str], Callable[..., Any]] = {}
+        self._middleware: list[Any] = []
+        # (methods, path) -> handler, for custom_route
+        self._routes: dict[tuple[str, str], Callable[..., Any]] = {}
         self._sessions: weakref.WeakSet[Session] = weakref.WeakSet()
+        self._lifespan_state: Any = None
+        self._lifespan_cm: Any = None
+        self._lifespan_async = False
+
+    def _check_duplicate(self, kind: str, name: str, registry: Any) -> None:
+        if name not in registry:
+            return
+        if self.on_duplicate == "error":
+            raise ValueError(f"{kind} {name!r} is already registered")
+        if self.on_duplicate == "warn":
+            warnings.warn(f"{kind} {name!r} is already registered; replacing", stacklevel=3)
 
     # ------------------------------------------------------------------
     # Decorators
@@ -112,6 +140,7 @@ class AnodizeMCP:
             context_param = _find_context_param(func)
             specs = build_params(func, skip=(context_param,) if context_param else ())
             tool_name: str = name if name is not None else getattr(func, "__name__", "tool")
+            self._check_duplicate("tool", tool_name, self._tools)
             out_schema, wrap = output_schema_for(_return_annotation(func))
             self._tools[tool_name] = ToolDef(
                 name=tool_name,
@@ -167,6 +196,7 @@ class AnodizeMCP:
                     )
                 )
             else:
+                self._check_duplicate("resource", uri, self._resources)
                 self._resources[uri] = ResourceDef(
                     uri=uri,
                     handler=func,
@@ -205,6 +235,7 @@ class AnodizeMCP:
                 for spec in specs
             ]
             prompt_name: str = name if name is not None else getattr(func, "__name__", "prompt")
+            self._check_duplicate("prompt", prompt_name, self._prompts)
             self._prompts[prompt_name] = PromptDef(
                 name=prompt_name,
                 handler=func,
@@ -258,6 +289,82 @@ class AnodizeMCP:
     def add_resource(self, uri: str, fn: Callable[..., Any], **kwargs: Any) -> Callable[..., Any]:
         self.resource(uri, **kwargs)(fn)
         return fn
+
+    def custom_route(
+        self,
+        path: str,
+        methods: list[str],
+        name: Optional[str] = None,
+        include_in_schema: bool = True,
+    ) -> Callable[[F], F]:
+        """Register a handler at an arbitrary HTTP path (health checks, callbacks).
+
+        The handler receives an :class:`~anodize_mcp.routes.Request` and returns a
+        :class:`~anodize_mcp.routes.Response`, a ``(status, body)`` tuple, a
+        ``dict``/``list`` (JSON), a ``str``, or ``bytes``. Custom routes bypass
+        the MCP auth and Origin checks. HTTP transport only.
+        """
+
+        def decorator(func: F) -> F:
+            for method in methods:
+                self._routes[(method.upper(), path)] = func
+            return func
+
+        return decorator
+
+    def find_route(self, method: str, path: str) -> Optional[Callable[..., Any]]:
+        return self._routes.get((method.upper(), path))
+
+    def add_middleware(self, middleware: Any) -> None:
+        self._middleware.append(middleware)
+
+    # ------------------------------------------------------------------
+    # Introspection and management
+    # ------------------------------------------------------------------
+
+    def list_tools(self) -> Any:
+        return defer([t.describe() for t in self._tools.values() if t.name not in self._disabled])
+
+    def list_resources(self) -> Any:
+        return defer([r.describe() for r in self._resources.values()])
+
+    def list_resource_templates(self) -> Any:
+        return defer([t.describe() for t in self._templates])
+
+    def list_prompts(self) -> Any:
+        return defer([p.describe() for p in self._prompts.values()])
+
+    def get_tool(self, name: str) -> Optional[ToolDef]:
+        return self._tools.get(name)
+
+    def get_prompt(self, name: str) -> Optional[PromptDef]:
+        return self._prompts.get(name)
+
+    def get_resource(self, uri: str) -> Optional[ResourceDef]:
+        return self._resources.get(uri)
+
+    def call_tool(self, name: str, arguments: Optional[dict[str, Any]] = None) -> Any:
+        """Invoke a registered tool in-process and return its result dict."""
+        session = self.new_session()
+        return defer(
+            self._handle_tool_call({"name": name, "arguments": arguments or {}}, session, None)
+        )
+
+    def render_prompt(self, name: str, arguments: Optional[dict[str, Any]] = None) -> Any:
+        """Render a registered prompt in-process and return its messages."""
+        session = self.new_session()
+        return defer(
+            self._handle_prompt_get({"name": name, "arguments": arguments or {}}, session, None)
+        )
+
+    def disable_tool(self, name: str) -> None:
+        self._disabled.add(name)
+        self.notify_tools_changed()
+
+    def enable_tool(self, name: str) -> None:
+        if name in self._disabled:
+            self._disabled.discard(name)
+            self.notify_tools_changed()
 
     # ------------------------------------------------------------------
     # Dynamic registration / notifications
@@ -329,7 +436,12 @@ class AnodizeMCP:
         params = message.get("params") or {}
 
         try:
-            result = self._route(method, params, session, request_id)
+            if self._middleware:
+                result = self._dispatch_with_middleware(
+                    method, params, session, request_id, is_notification
+                )
+            else:
+                result = self._route(method, params, session, request_id)
         except McpError as exc:
             return (
                 None if is_notification else make_error(request_id, exc.code, exc.message, exc.data)
@@ -345,6 +457,56 @@ class AnodizeMCP:
             return None
         return make_response(request_id, result)
 
+    def _dispatch_with_middleware(
+        self,
+        method: str,
+        params: dict[str, Any],
+        session: Session,
+        request_id: Any,
+        is_notification: bool,
+    ) -> Any:
+        from .middleware import OPERATION_HOOKS, MiddlewareContext
+
+        mw_context = MiddlewareContext(
+            message=params,
+            method=method,
+            source="client",
+            type="notification" if is_notification else "request",
+            fastmcp_context=Context(session, self, request_id),
+        )
+
+        async def terminal(_ctx: MiddlewareContext) -> Any:
+            return self._route(method, params, session, request_id)
+
+        stages = ["on_message", "on_notification" if is_notification else "on_request"]
+        operation_hook = OPERATION_HOOKS.get(method)
+        if operation_hook is not None:
+            stages.append(operation_hook)
+
+        call: Any = terminal
+        for stage in reversed(stages):
+            call = self._wrap_stage(stage, call)
+        return run_maybe_async(call(mw_context))
+
+    def _wrap_stage(self, stage_name: str, terminal: Any) -> Any:
+        handlers = [getattr(mw, stage_name) for mw in self._middleware if hasattr(mw, stage_name)]
+
+        def build(index: int) -> Any:
+            if index >= len(handlers):
+                return terminal
+
+            next_call = build(index + 1)
+
+            async def call(ctx: Any) -> Any:
+                out = handlers[index](ctx, next_call)
+                if inspect.iscoroutine(out):
+                    out = await out
+                return out
+
+            return call
+
+        return build(0)
+
     def _route(self, method: str, params: dict[str, Any], session: Session, request_id: Any) -> Any:
         if method == "initialize":
             return self._handle_initialize(params, session)
@@ -359,7 +521,8 @@ class AnodizeMCP:
                 session.log_level = level
             return {}
         if method == "tools/list":
-            return self._paged("tools", list(self._tools.values()), params)
+            active = [t for t in self._tools.values() if t.name not in self._disabled]
+            return self._paged("tools", active, params)
         if method == "tools/call":
             return self._handle_tool_call(params, session, request_id)
         if method == "resources/list":
@@ -408,6 +571,10 @@ class AnodizeMCP:
         server_info: dict[str, Any] = {"name": self.name, "version": self.version}
         if self.title is not None:
             server_info["title"] = self.title
+        if self.icons is not None:
+            server_info["icons"] = self.icons
+        if self.website_url is not None:
+            server_info["websiteUrl"] = self.website_url
 
         result: dict[str, Any] = {
             "protocolVersion": session.protocol_version,
@@ -435,7 +602,7 @@ class AnodizeMCP:
     ) -> dict[str, Any]:
         name = params.get("name")
         tool = self._tools.get(name) if isinstance(name, str) else None
-        if tool is None:
+        if tool is None or name in self._disabled:
             raise McpError(f"unknown tool: {name!r}", code=METHOD_NOT_FOUND)
 
         arguments = params.get("arguments") or {}
@@ -453,7 +620,8 @@ class AnodizeMCP:
         except McpError:
             raise
         except Exception as exc:  # noqa: BLE001
-            return self._tool_error(f"{type(exc).__name__}: {exc}")
+            detail = "internal error" if self.mask_error_details else f"{type(exc).__name__}: {exc}"
+            return self._tool_error(detail)
 
         content, _ = normalize_tool_result(value)
         result: dict[str, Any] = {"content": content, "isError": False}
@@ -585,7 +753,11 @@ class AnodizeMCP:
     def run_stdio(self, **kwargs: Any) -> None:
         from .transports.stdio import serve_stdio
 
-        serve_stdio(self, **kwargs)
+        self._enter_lifespan()
+        try:
+            serve_stdio(self, **kwargs)
+        finally:
+            self._exit_lifespan()
 
     def run_http(
         self,
@@ -595,7 +767,44 @@ class AnodizeMCP:
     ) -> None:
         from .transports.http import serve_http
 
-        serve_http(self, host=host, port=port, **kwargs)
+        self._enter_lifespan()
+        try:
+            serve_http(self, host=host, port=port, **kwargs)
+        finally:
+            self._exit_lifespan()
+
+    def _enter_lifespan(self) -> Any:
+        """Run the lifespan startup and store the yielded value.
+
+        Accepts a sync or async context manager (``@contextmanager`` or
+        ``@asynccontextmanager``). Synchronous resources work cleanly; an async
+        resource bound to an event loop carries the usual cross-loop caveat,
+        since each handler runs on its own loop.
+        """
+        if self.lifespan is None:
+            return None
+        manager = self.lifespan(self)
+        if hasattr(manager, "__aenter__"):
+            self._lifespan_cm = manager
+            self._lifespan_async = True
+            self._lifespan_state = run_coro(manager.__aenter__())
+        elif hasattr(manager, "__enter__"):
+            self._lifespan_cm = manager
+            self._lifespan_async = False
+            self._lifespan_state = manager.__enter__()
+        else:
+            self._lifespan_state = manager
+        return self._lifespan_state
+
+    def _exit_lifespan(self) -> None:
+        manager = self._lifespan_cm
+        self._lifespan_cm = None
+        if manager is None:
+            return
+        if self._lifespan_async:
+            run_coro(manager.__aexit__(None, None, None))
+        else:
+            manager.__exit__(None, None, None)
 
 
 # `Anodize` is a short alias for the canonical class name.

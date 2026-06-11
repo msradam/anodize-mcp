@@ -30,6 +30,15 @@ if TYPE_CHECKING:
     from .server import AnodizeMCP
 
 
+@dataclasses.dataclass
+class RequestContext:
+    """The per-request state FastMCP exposes via ``ctx.request_context``."""
+
+    lifespan_context: Any = None
+    request_id: Any = None
+    session: Any = None
+
+
 class Context:
     def __init__(
         self,
@@ -69,6 +78,38 @@ class Context:
         from .auth import get_access_token
 
         return get_access_token()
+
+    @property
+    def fastmcp(self) -> AnodizeMCP:
+        return self._server
+
+    @property
+    def server(self) -> AnodizeMCP:
+        return self._server
+
+    @property
+    def transport(self) -> Optional[str]:
+        return getattr(self._session, "transport", None)
+
+    @property
+    def lifespan_context(self) -> Any:
+        return self._server._lifespan_state
+
+    @property
+    def request_context(self) -> RequestContext:
+        return RequestContext(
+            lifespan_context=self._server._lifespan_state,
+            request_id=self._request_id,
+            session=self._session,
+        )
+
+    def client_supports_extension(self, name: str) -> bool:
+        return name in self._session.client_capabilities
+
+    def send_notification(self, method: str, params: Optional[dict[str, Any]] = None) -> Any:
+        """Send an arbitrary JSON-RPC notification to the client."""
+        self._session.send_message(make_notification(method, params))
+        return defer(None)
 
     # -- logging ----------------------------------------------------------
 

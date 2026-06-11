@@ -44,6 +44,15 @@ class _LoopRunner:
 _runner = _LoopRunner()
 
 
+def run_coro(coro: Any) -> Any:
+    """Run a coroutine on the shared background loop and block for the result.
+
+    Used for lifespan enter/exit, where a single persistent loop must own any
+    async resources for their whole lifetime.
+    """
+    return _runner.run(coro)
+
+
 def run_maybe_async(value: Any) -> Any:
     """If ``value`` is a coroutine, run it to completion and return the result.
 

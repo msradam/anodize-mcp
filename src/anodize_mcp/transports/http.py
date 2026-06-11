@@ -53,6 +53,7 @@ class _HttpSession:
         self.queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1024)
         self.core: Session = server.new_session(send=self._enqueue)
         self.core.session_id = session_id
+        self.core.transport = "http"
 
     def _enqueue(self, message: dict[str, Any]) -> None:
         try:
@@ -183,10 +184,62 @@ def _make_handler(manager: _Manager) -> type[BaseHTTPRequestHandler]:
                 return False, None
             return True, access
 
+        def _custom_route(self) -> bool:
+            """Dispatch a registered custom route; return True if one handled it."""
+            from ..routes import Request, coerce_response, parse_query
+
+            split = urlsplit(self.path)
+            handler = manager.server.find_route(self.command, split.path)
+            if handler is None:
+                return False
+            length = int(self.headers.get("Content-Length", "0") or "0")
+            body = self.rfile.read(length) if length else b""
+            request = Request(
+                method=self.command,
+                path=split.path,
+                headers={k: v for k, v in self.headers.items()},
+                query=parse_query(split.query),
+                body=body,
+            )
+            try:
+                result = run_maybe_async(handler(request))
+                status, data, headers = coerce_response(result).render()
+            except Exception as exc:  # noqa: BLE001
+                status, data, headers = (
+                    int(HTTPStatus.INTERNAL_SERVER_ERROR),
+                    json.dumps({"error": str(exc)}).encode("utf-8"),
+                    {"Content-Type": "application/json"},
+                )
+            self.send_response(status)
+            for key, value in headers.items():
+                self.send_header(key, value)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return True
+
+        def _custom_or_404(self) -> None:
+            if not self._custom_route():
+                self._send_status(HTTPStatus.NOT_FOUND)
+
+        def do_PUT(self) -> None:  # noqa: N802
+            self._custom_or_404()
+
+        def do_PATCH(self) -> None:  # noqa: N802
+            self._custom_or_404()
+
+        def do_OPTIONS(self) -> None:  # noqa: N802
+            self._custom_or_404()
+
+        def do_HEAD(self) -> None:  # noqa: N802
+            self._custom_or_404()
+
         # -- verbs --------------------------------------------------------
 
         def do_POST(self) -> None:  # noqa: N802
             if not self._path_ok():
+                if self._custom_route():
+                    return
                 self._send_status(HTTPStatus.NOT_FOUND)
                 return
             if self._bad_origin() or not self._protocol_version_ok():
@@ -258,6 +311,8 @@ def _make_handler(manager: _Manager) -> type[BaseHTTPRequestHandler]:
 
         def do_GET(self) -> None:  # noqa: N802
             if not self._path_ok():
+                if self._custom_route():
+                    return
                 self._send_status(HTTPStatus.NOT_FOUND)
                 return
             if self._bad_origin() or not self._protocol_version_ok():
@@ -280,6 +335,8 @@ def _make_handler(manager: _Manager) -> type[BaseHTTPRequestHandler]:
 
         def do_DELETE(self) -> None:  # noqa: N802
             if not self._path_ok():
+                if self._custom_route():
+                    return
                 self._send_status(HTTPStatus.NOT_FOUND)
                 return
             authed, _access = self._authenticate()

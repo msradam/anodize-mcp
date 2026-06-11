@@ -46,14 +46,16 @@ from .content import (
     ResourceLink,
     TextContent,
 )
-from .context import Context
+from .context import Context, RequestContext
 from .exceptions import McpError, ResourceError, ToolError
+from .middleware import Middleware, MiddlewareContext
 from .models import PromptMessage
 from .protocol import LATEST_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS
+from .routes import Request, Response
 from .schema import Field
 from .server import Anodize, AnodizeMCP, FastMCP
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "AnodizeMCP",
@@ -80,6 +82,11 @@ __all__ = [
     "StaticTokenVerifier",
     "JWTVerifier",
     "get_access_token",
+    "Middleware",
+    "MiddlewareContext",
+    "Request",
+    "Response",
+    "RequestContext",
     "LATEST_PROTOCOL_VERSION",
     "SUPPORTED_PROTOCOL_VERSIONS",
     "__version__",

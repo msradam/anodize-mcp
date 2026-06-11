@@ -53,6 +53,7 @@ class Session:
         self.session_id: Optional[str] = None
         self.subscriptions: set[str] = set()
         self.state: dict[str, Any] = {}
+        self.transport: Optional[str] = None
 
         self._pending: dict[str, _Pending] = {}
         self._pending_lock = threading.Lock()

@@ -47,6 +47,7 @@ def serve_stdio(
             out.flush()
 
     session = server.new_session(send=send)
+    session.transport = "stdio"
     executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="anodize-stdio")
 
     def process(message: dict[str, Any]) -> None:
