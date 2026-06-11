@@ -38,7 +38,13 @@ from .auth import (
     TokenVerifier,
     get_access_token,
 )
-from .client import CallToolResult, Client, ClientError, FastMCPTransport
+from .client import (
+    CallToolResult,
+    Client,
+    ClientError,
+    FastMCPTransport,
+    StreamableHttpTransport,
+)
 from .clientfeatures import CompletionResult, CreateMessageResult, ElicitResult, Root
 from .content import (
     AudioContent,
@@ -117,6 +123,7 @@ __all__ = [
     "Client",
     "ClientError",
     "FastMCPTransport",
+    "StreamableHttpTransport",
     "CallToolResult",
     "LATEST_PROTOCOL_VERSION",
     "SUPPORTED_PROTOCOL_VERSIONS",
