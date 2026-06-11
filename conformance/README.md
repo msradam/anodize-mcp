@@ -52,14 +52,17 @@ full (excluding timing/concurrency tests, which are not deterministic):
 | `tests/server/middleware/test_rate_limiting.py` | 22/22 |
 | `tests/server/middleware/test_timing.py` | 13/13 |
 
-Partial, not gated (remaining failures are the out-of-scope categories above):
+Across the full core suite (tools, resources, prompts, server, client, all
+middleware; excluding the non-deterministic integration/retry tests) the figure
+is 408 of 527 (77%). The remaining 119 are dominated by:
 
-| FastMCP test file | Result |
-|---|---|
-| `tests/server/middleware/test_logging.py` | 11/23 |
-| `tests/server/middleware/test_error_handling.py` (deterministic) | 9/18 |
-| `tests/tools/tool/*`, `tests/resources/test_resources.py` | most pass |
-
-Across the broader core suite (tools, resources, prompts, server, client,
-middleware) the figure is roughly 345 of 520, with the rest dominated by the
-two out-of-scope categories above.
+- The two out-of-scope categories above (`isinstance(x, mcp.types.*)`, pydantic
+  model coercion, FastMCP-internal helpers). Substituting `mcp.types.*` in the
+  harness is not viable: it breaks FastMCP's own content pipeline, which builds
+  real `mcp.types` objects. `mcp.McpError` is safely substituted, so error-path
+  `isinstance` checks do resolve.
+- FastMCP 3.x surface anodize does not implement: providers, server mounting,
+  task queues, the `FunctionTool`/`Tool.from_function` object model, and version
+  identity (`mcp.name` starts with `FastMCP-`).
+- The session-scoped `Context` state store, which would require aliasing
+  FastMCP's `Context` and reimplementing its state model.
