@@ -53,9 +53,12 @@ class PromptDef:
 @dataclass
 class PromptMessage:
     role: str  # "user" or "assistant"
-    text: str
+    text: Optional[str] = None
+    content: Any = None  # a content block (or list); overrides text when set
 
     def to_dict(self) -> dict[str, Any]:
+        if self.content is not None:
+            return {"role": self.role, "content": self.content}
         return {"role": self.role, "content": {"type": "text", "text": self.text}}
 
 

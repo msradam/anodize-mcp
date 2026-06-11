@@ -105,9 +105,14 @@ class Client:
         self._progress_seq = 0
         self._reader_task: Optional[asyncio.Task[None]] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._entered = 0
         self.initialize_result: Optional[dict[str, Any]] = None
 
     async def __aenter__(self) -> Client:
+        # Reference-count nested `async with`; only the outermost opens/closes.
+        self._entered += 1
+        if self._entered > 1:
+            return self
         self._loop = asyncio.get_event_loop()
         self._transport.start(self._outbox)
         self._reader_task = asyncio.create_task(self._read_loop())
@@ -122,9 +127,13 @@ class Client:
         return self.initialize_result
 
     async def __aexit__(self, *exc: Any) -> None:
-        await self.close()
+        if self._entered > 0:
+            self._entered -= 1
+        if self._entered == 0:
+            await self.close()
 
     async def close(self) -> None:
+        self._entered = 0
         with contextlib.suppress(Exception):
             self._transport.close()
         if self._reader_task is not None:
@@ -166,7 +175,7 @@ class Client:
             if method == "sampling/createMessage" and self._sampling_handler is not None:
                 result = _sampling_result(await _call_sampling(self._sampling_handler, params))
             elif method == "elicitation/create" and self._elicitation_handler is not None:
-                result = _elicit_result(await _call(self._elicitation_handler, params))
+                result = _elicit_result(await _call_elicitation(self._elicitation_handler, params))
             elif method == "roots/list":
                 result = {"roots": self._roots_list()}
             else:
@@ -427,6 +436,33 @@ async def _call_sampling(handler: Callable[..., Any], params: dict[str, Any]) ->
     return out
 
 
+class _ElicitResponse:
+    """Permissive stand-in for FastMCP's generated elicitation response type.
+
+    A FastMCP elicitation handler builds its reply by calling the response type
+    with field values; capture those and surface them as an ``accept`` result.
+    """
+
+    def __init__(self, **fields: Any):
+        self.__dict__.update(fields)
+        self._fields = fields
+
+
+async def _call_elicitation(handler: Callable[..., Any], params: dict[str, Any]) -> Any:
+    """Invoke an elicitation handler, supporting anodize's ``handler(params)`` and
+    FastMCP's ``handler(message, response_type, params, context)`` signatures."""
+    n = _positional_count(handler)
+    if n >= 4:
+        out = handler(params.get("message"), _ElicitResponse, params, None)
+    elif n == 2:
+        out = handler(params.get("message"), params)
+    else:
+        out = handler(params)
+    if inspect.iscoroutine(out):
+        out = await out
+    return out
+
+
 def _sampling_result(value: Any) -> dict[str, Any]:
     if isinstance(value, str):
         return {
@@ -440,4 +476,6 @@ def _sampling_result(value: Any) -> dict[str, Any]:
 def _elicit_result(value: Any) -> dict[str, Any]:
     if isinstance(value, str):
         return {"action": value}
+    if isinstance(value, _ElicitResponse):
+        return {"action": "accept", "content": value._fields}
     return value

@@ -110,9 +110,7 @@ class StreamableHttpTransport:
     server-initiated messages (progress, sampling, elicitation).
     """
 
-    def __init__(
-        self, url: str, headers: Optional[dict[str, str]] = None, timeout: float = 30.0
-    ):
+    def __init__(self, url: str, headers: Optional[dict[str, str]] = None, timeout: float = 30.0):
         self._url = url
         self._headers = dict(headers or {})
         self._timeout = timeout
