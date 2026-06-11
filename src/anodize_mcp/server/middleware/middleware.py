@@ -48,6 +48,7 @@ class MiddlewareContext(Generic[T]):
 
 # method -> the per-operation hook name, matching FastMCP.
 OPERATION_HOOKS = {
+    "initialize": "on_initialize",
     "tools/call": "on_call_tool",
     "tools/list": "on_list_tools",
     "resources/read": "on_read_resource",
@@ -69,6 +70,9 @@ class Middleware:
         return await call_next(context)
 
     async def on_notification(self, context: MiddlewareContext, call_next: Any) -> Any:
+        return await call_next(context)
+
+    async def on_initialize(self, context: MiddlewareContext, call_next: Any) -> Any:
         return await call_next(context)
 
     async def on_call_tool(self, context: MiddlewareContext, call_next: Any) -> Any:

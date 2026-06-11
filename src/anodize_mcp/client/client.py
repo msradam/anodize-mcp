@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
+import warnings
 from queue import Queue
 from typing import Any, Callable, Optional, Union
 
@@ -98,7 +99,10 @@ class Client:
         self._timeout = timeout
         self._outbox: Queue[Any] = Queue()
         self._pending: dict[int, asyncio.Future[dict[str, Any]]] = {}
+        # progressToken -> handler, for tool calls that report progress.
+        self._progress_handlers: dict[str, Callable[..., Any]] = {}
         self._req_id = 0
+        self._progress_seq = 0
         self._reader_task: Optional[asyncio.Task[None]] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self.initialize_result: Optional[dict[str, Any]] = None
@@ -160,7 +164,7 @@ class Client:
         params = message.get("params") or {}
         try:
             if method == "sampling/createMessage" and self._sampling_handler is not None:
-                result = _sampling_result(await _call(self._sampling_handler, params))
+                result = _sampling_result(await _call_sampling(self._sampling_handler, params))
             elif method == "elicitation/create" and self._elicitation_handler is not None:
                 result = _elicit_result(await _call(self._elicitation_handler, params))
             elif method == "roots/list":
@@ -175,8 +179,12 @@ class Client:
     async def _handle_notification(self, method: str, params: dict[str, Any]) -> None:
         if method == "notifications/message" and self._log_handler is not None:
             await _call(self._log_handler, params)
-        elif method == "notifications/progress" and self._progress_handler is not None:
-            await _call(self._progress_handler, params)
+        elif method == "notifications/progress":
+            token = params.get("progressToken")
+            handler = self._progress_handlers.get(token) if token is not None else None
+            handler = handler or self._progress_handler
+            if handler is not None:
+                await _call(handler, params)
 
     def _roots_list(self) -> list[dict[str, Any]]:
         roots = self._roots() if callable(self._roots) else self._roots
@@ -184,7 +192,9 @@ class Client:
 
     # -- requests ---------------------------------------------------------
 
-    async def _request(self, method: str, params: Optional[dict[str, Any]] = None) -> Any:
+    async def _request(
+        self, method: str, params: Optional[dict[str, Any]] = None, timeout: Optional[float] = None
+    ) -> Any:
         assert self._loop is not None
         self._req_id += 1
         request_id = self._req_id
@@ -192,7 +202,9 @@ class Client:
         self._pending[request_id] = future
         self._transport.send(make_request(request_id, method, params))
         try:
-            response = await asyncio.wait_for(future, self._timeout)
+            response = await asyncio.wait_for(
+                future, timeout if timeout is not None else self._timeout
+            )
         except asyncio.TimeoutError as exc:
             self._pending.pop(request_id, None)
             raise ClientError(f"request {method!r} timed out") from exc
@@ -229,6 +241,7 @@ class Client:
     ) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
         cursor: Optional[str] = None
+        seen: set[str] = set()
         pages = 0
         while True:
             result = await self._request(method, {"cursor": cursor} if cursor else {})
@@ -237,6 +250,13 @@ class Client:
             pages += 1
             if not cursor or (max_pages is not None and pages >= max_pages):
                 return [_wrap(item) for item in items]
+            # A server that repeats a cursor would loop forever; stop and warn, as FastMCP does.
+            if cursor in seen:
+                warnings.warn(
+                    f"{method} returned a repeated pagination cursor; stopping", stacklevel=2
+                )
+                return [_wrap(item) for item in items]
+            seen.add(cursor)
 
     async def _list_page(self, method: str, cursor: Optional[str]) -> Any:
         raw = await self._request(method, {"cursor": cursor} if cursor else {})
@@ -252,14 +272,33 @@ class Client:
         await self._request("ping")
         return True
 
-    @staticmethod
-    def _tool_params(
-        name: str, arguments: Optional[dict[str, Any]], meta: Optional[dict[str, Any]]
+    async def _send_tool_call(
+        self,
+        name: str,
+        arguments: Optional[dict[str, Any]],
+        *,
+        meta: Optional[dict[str, Any]],
+        timeout: Optional[float],
+        progress_handler: Optional[Callable[..., Any]],
     ) -> dict[str, Any]:
         params: dict[str, Any] = {"name": name, "arguments": arguments or {}}
-        if meta is not None:
-            params["_meta"] = meta
-        return params
+        handler = progress_handler or self._progress_handler
+        token: Optional[str] = None
+        merged_meta = dict(meta) if meta else {}
+        if handler is not None:
+            # The server only reports progress when a progressToken is supplied;
+            # generate one and route notifications back to the handler.
+            self._progress_seq += 1
+            token = f"p{self._progress_seq}"
+            merged_meta["progressToken"] = token
+            self._progress_handlers[token] = handler
+        if merged_meta:
+            params["_meta"] = merged_meta
+        try:
+            return await self._request("tools/call", params, timeout)
+        finally:
+            if token is not None:
+                self._progress_handlers.pop(token, None)
 
     async def list_tools(self, *, max_pages: Optional[int] = None) -> list[dict[str, Any]]:
         return await self._list_all("tools/list", "tools", max_pages)
@@ -274,9 +313,13 @@ class Client:
         *,
         raise_on_error: bool = True,
         meta: Optional[dict[str, Any]] = None,
+        timeout: Optional[float] = None,
+        progress_handler: Optional[Callable[..., Any]] = None,
     ) -> CallToolResult:
         result = CallToolResult(
-            await self._request("tools/call", self._tool_params(name, arguments, meta))
+            await self._send_tool_call(
+                name, arguments, meta=meta, timeout=timeout, progress_handler=progress_handler
+            )
         )
         if result.is_error and raise_on_error:
             raise ClientError(result.text or f"Tool {name!r} returned an error")
@@ -288,9 +331,15 @@ class Client:
         arguments: Optional[dict[str, Any]] = None,
         *,
         meta: Optional[dict[str, Any]] = None,
+        timeout: Optional[float] = None,
+        progress_handler: Optional[Callable[..., Any]] = None,
     ) -> Any:
         """Call a tool and return the raw result without raising on ``isError``."""
-        return _wrap(await self._request("tools/call", self._tool_params(name, arguments, meta)))
+        return _wrap(
+            await self._send_tool_call(
+                name, arguments, meta=meta, timeout=timeout, progress_handler=progress_handler
+            )
+        )
 
     async def list_resources(self, *, max_pages: Optional[int] = None) -> list[dict[str, Any]]:
         return await self._list_all("resources/list", "resources", max_pages)
@@ -349,6 +398,30 @@ class Client:
 
 async def _call(handler: Callable[..., Any], params: dict[str, Any]) -> Any:
     out = handler(params)
+    if inspect.iscoroutine(out):
+        out = await out
+    return out
+
+
+def _positional_count(fn: Callable[..., Any]) -> int:
+    try:
+        kinds = (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        return sum(1 for p in inspect.signature(fn).parameters.values() if p.kind in kinds)
+    except (TypeError, ValueError):
+        return 1
+
+
+async def _call_sampling(handler: Callable[..., Any], params: dict[str, Any]) -> Any:
+    """Invoke a sampling handler, supporting both anodize's ``handler(params)`` and
+    FastMCP's ``handler(messages, params, context)`` signatures."""
+    messages = _wrap(params.get("messages", []))
+    n = _positional_count(handler)
+    if n >= 3:
+        out = handler(messages, params, None)
+    elif n == 2:
+        out = handler(messages, params)
+    else:
+        out = handler(params)
     if inspect.iscoroutine(out):
         out = await out
     return out
