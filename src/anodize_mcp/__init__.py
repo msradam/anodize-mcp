@@ -37,6 +37,7 @@ from .auth import (
     TokenVerifier,
     get_access_token,
 )
+from .client import CallToolResult, Client, ClientError
 from .clientfeatures import CompletionResult, CreateMessageResult, ElicitResult, Root
 from .content import (
     AudioContent,
@@ -55,7 +56,7 @@ from .routes import Request, Response
 from .schema import Field
 from .server import Anodize, AnodizeMCP, FastMCP
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = [
     "AnodizeMCP",
@@ -87,6 +88,9 @@ __all__ = [
     "Request",
     "Response",
     "RequestContext",
+    "Client",
+    "ClientError",
+    "CallToolResult",
     "LATEST_PROTOCOL_VERSION",
     "SUPPORTED_PROTOCOL_VERSIONS",
     "__version__",

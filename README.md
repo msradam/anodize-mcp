@@ -117,7 +117,8 @@ FastMCP).
 | OAuth 2.1 server flow / hosted-IdP provider wrappers | Not supported; verify externally-issued tokens with `auth=` instead |
 | `mcp.mount` / `import_server` / `as_proxy` / `from_openapi` | Not supported (server composition and generation) |
 | `@mcp.tool(task=True)` background tasks | Not supported |
-| `fastmcp.Client`, the `fastmcp` CLI | Not supported (anodize is server-only) |
+| `fastmcp.Client` | Supported in-memory and over stdio (see Testing); HTTP client transport is not implemented |
+| the `fastmcp` CLI | Not supported |
 | `transport="sse"` (deprecated) | Raises a clear error; use `"http"` |
 
 The other expected difference is the negotiated protocol revision: AnodizeMCP
@@ -302,6 +303,38 @@ class Timing(Middleware):
         return result
 
 mcp.add_middleware(Timing())
+```
+
+## Testing with the in-memory client
+
+`Client` connects to a server with no network in between, the way FastMCP's test client does, so a test exercises the real MCP request path. Pass the server object for an in-process connection, or a command list to launch a subprocess over stdio.
+
+```python
+import asyncio
+from anodize_mcp import AnodizeMCP, Client
+
+mcp = AnodizeMCP("demo")
+
+@mcp.tool
+def add(a: int, b: int) -> int:
+    return a + b
+
+async def main():
+    async with Client(mcp) as client:                 # in-process
+        result = await client.call_tool("add", {"a": 1, "b": 2})
+        assert result.data == {"result": 3}
+
+    async with Client(["python", "server.py"]) as client:  # subprocess over stdio
+        tools = await client.list_tools()
+
+asyncio.run(main())
+```
+
+The client has `list_tools`, `call_tool`, `list_resources`, `read_resource`, `list_resource_templates`, `list_prompts`, `get_prompt`, `complete`, and `ping`, and follows pagination automatically. Pass `sampling_handler`, `elicitation_handler`, and `roots` to answer the server's `ctx.sample`/`ctx.elicit`/`ctx.list_roots` calls; the client advertises the matching capability and the round-trip runs in process.
+
+```python
+async with Client(mcp, sampling_handler=lambda params: "the model reply") as client:
+    result = await client.call_tool("summarize", {"text": "..."})
 ```
 
 ## Dynamic changes
