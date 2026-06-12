@@ -469,6 +469,129 @@ class Round9ParityTest(unittest.TestCase):
             self.assertIn("$defs", schema)
 
 
+class Round10ParityTest(unittest.TestCase):
+    def test_var_args_rejected_at_registration(self):
+        mcp = AnodizeMCP("va")
+        with self.assertRaises(ValueError):
+
+            @mcp.tool
+            def kw(**kwargs) -> str:
+                return "x"
+
+        with self.assertRaises(ValueError):
+
+            @mcp.tool
+            def star(*args) -> str:
+                return "x"
+
+    def test_template_params_coerced_and_json_mime(self):
+        mcp = AnodizeMCP("tp")
+
+        @mcp.resource("data://pair/{a}/{b}")
+        def pair(a: int, b: int) -> dict:
+            return {"a": a, "b": b}
+
+        async def main():
+            async with Client(mcp) as c:
+                templates = await c.list_resource_templates()
+                contents = await c.read_resource("data://pair/4/5")
+                return templates[0], contents[0]
+
+        template, content = asyncio.run(main())
+        self.assertEqual(template["mimeType"], "text/plain")
+        self.assertEqual(content["mimeType"], "application/json")
+        self.assertEqual(json.loads(content["text"]), {"a": 4, "b": 5})
+
+    def test_meta_reaches_request_context(self):
+        from anodize_mcp import Context
+
+        mcp = AnodizeMCP("mt")
+
+        @mcp.tool
+        def who(ctx: Context) -> str:
+            meta = ctx.request_context.meta
+            return meta.userId if meta else "none"
+
+        async def main():
+            async with Client(mcp) as c:
+                return await c.call_tool("who", {}, meta={"userId": "u1"})
+
+        self.assertEqual(asyncio.run(main()).text, "u1")
+
+    def test_dict_annotation_unwrapped_and_untyped_dict_structured(self):
+        mcp = AnodizeMCP("dw")
+
+        @mcp.tool
+        def typed() -> dict:
+            return {"a": 1}
+
+        @mcp.tool
+        def untyped():
+            return {"b": 2}
+
+        async def main():
+            async with Client(mcp) as c:
+                tools = {t["name"]: t for t in await c.list_tools()}
+                a = await c.call_tool("typed", {})
+                b = await c.call_tool("untyped", {})
+                return tools, a, b
+
+        tools, a, b = asyncio.run(main())
+        self.assertNotIn("x-fastmcp-wrap-result", tools["typed"]["outputSchema"])
+        self.assertEqual(a.structured_content, {"a": 1})
+        self.assertEqual(b.structured_content, {"b": 2})
+
+    def test_attrdict_missing_field_is_none(self):
+        mcp = AnodizeMCP("af")
+
+        @mcp.tool
+        def pic() -> Image:
+            return Image(data=b"x")
+
+        async def main():
+            async with Client(mcp) as c:
+                return (await c.list_tools())[0]
+
+        tool = asyncio.run(main())
+        self.assertIsNone(tool.outputSchema)
+
+    def test_mixed_content_list(self):
+        mcp = AnodizeMCP("mx")
+
+        @mcp.tool
+        def mixed():
+            return ["caption", Image(data=b"png"), {"k": 1}]
+
+        async def main():
+            async with Client(mcp) as c:
+                return await c.call_tool("mixed", {})
+
+        result = asyncio.run(main())
+        kinds = [b["type"] for b in result.content]
+        self.assertEqual(kinds, ["text", "image", "text"])
+        self.assertEqual(result.content[0]["text"], "caption")
+        self.assertEqual(json.loads(result.content[2]["text"]), {"k": 1})
+
+    def test_elicit_without_schema(self):
+        from anodize_mcp import Context
+
+        mcp = AnodizeMCP("el")
+
+        @mcp.tool
+        async def confirm(ctx: Context) -> str:
+            r = await ctx.elicit("Proceed?")
+            return r.action
+
+        async def handler(message, response_type, params, context):
+            return None
+
+        async def main():
+            async with Client(mcp, elicitation_handler=handler) as c:
+                return await c.call_tool("confirm", {})
+
+        self.assertEqual(asyncio.run(main()).text, "accept")
+
+
 class ResourceListTest(unittest.TestCase):
     def test_list_return_is_one_json_document(self):
         mcp = AnodizeMCP("r")

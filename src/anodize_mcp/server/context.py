@@ -52,6 +52,7 @@ class RequestContext:
     lifespan_context: Any = None
     request_id: Any = None
     session: Any = None
+    meta: Any = None
 
 
 class Context:
@@ -61,11 +62,13 @@ class Context:
         server: AnodizeMCP,
         request_id: Any = None,
         progress_token: Any = None,
+        meta: Optional[dict[str, Any]] = None,
     ):
         self._session = session
         self._server = server
         self._request_id = request_id
         self._progress_token = progress_token
+        self._meta = meta
 
     @property
     def session(self) -> Session:
@@ -116,6 +119,7 @@ class Context:
             lifespan_context=self._server._lifespan_state,
             request_id=self._request_id,
             session=self._session,
+            meta=attr_wrap(self._meta) if self._meta else None,
         )
 
     def client_supports_extension(self, name: str) -> bool:
@@ -302,10 +306,13 @@ class Context:
         is an instance of a dataclass schema, the unwrapped scalar, or the raw dict.
         """
         schema = response_type if schema is None else schema
-        if schema is None:
-            raise TypeError("elicit() requires a schema or response_type")
         self._require_client_capability("elicitation")
-        params = {"message": message, "requestedSchema": elicitation_schema(schema)}
+        # No schema means a bare confirmation: FastMCP sends an empty object
+        # schema and the accept carries empty data.
+        requested = (
+            {"type": "object", "properties": {}} if schema is None else elicitation_schema(schema)
+        )
+        params = {"message": message, "requestedSchema": requested}
         result = self._session.send_request("elicitation/create", params, timeout=timeout) or {}
         action = result.get("action", "cancel")
         content = result.get("content")

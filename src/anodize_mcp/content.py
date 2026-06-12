@@ -161,10 +161,17 @@ def _model_dump(value: Any) -> Optional[dict[str, Any]]:
 
 
 def is_content_value(value: Any) -> bool:
-    """True if ``value`` is a content block or a non-empty list of them."""
-    if _is_content_block(value):
+    """True if ``value`` is content: a block, an Image/Audio/File helper, or a
+    non-empty list containing any of those."""
+    if _is_content_block(value) or callable(getattr(value, "to_content_block", None)):
         return True
-    return isinstance(value, list) and bool(value) and all(_is_content_block(v) for v in value)
+    return (
+        isinstance(value, list)
+        and bool(value)
+        and any(
+            _is_content_block(v) or callable(getattr(v, "to_content_block", None)) for v in value
+        )
+    )
 
 
 def to_jsonable(value: Any) -> Any:
@@ -207,6 +214,28 @@ def normalize_tool_result(value: Any) -> tuple[list[dict[str, Any]], Optional[di
     if isinstance(value, list) and value and all(_is_content_block(v) for v in value):
         return [v.to_dict() for v in value], None
 
+    # A mixed list containing content blocks or Image/Audio/File helpers:
+    # each element becomes its own block (text for strings, JSON text
+    # otherwise), as FastMCP converts untyped sequence returns.
+    if (
+        isinstance(value, list)
+        and value
+        and any(
+            _is_content_block(v) or callable(getattr(v, "to_content_block", None)) for v in value
+        )
+    ):
+        blocks = []
+        for item in value:
+            if _is_content_block(item):
+                blocks.append(item.to_dict())
+            elif callable(getattr(item, "to_content_block", None)):
+                blocks.append(item.to_content_block().to_dict())
+            elif isinstance(item, str):
+                blocks.append(TextContent(item).to_dict())
+            else:
+                blocks.append(TextContent(_json_text(to_jsonable(item))).to_dict())
+        return blocks, None
+
     if isinstance(value, str):
         return [TextContent(value).to_dict()], None
 
@@ -246,7 +275,11 @@ def _json_text(value: Any) -> str:
 
 
 def normalize_resource_result(
-    uri: str, value: Any, mime_type: Optional[str] = None
+    uri: str,
+    value: Any,
+    mime_type: Optional[str] = None,
+    *,
+    json_mime_default: str = "text/plain",
 ) -> list[dict[str, Any]]:
     """Turn a resource handler's return value into a ``contents`` array."""
     if isinstance(value, ResourceContents):
@@ -259,12 +292,13 @@ def normalize_resource_result(
         return [ResourceContents(uri=uri, text=value, mimeType=mime_type or "text/plain").to_dict()]
     if isinstance(value, bytes):
         return [ResourceContents.from_bytes(uri, value, mime_type).to_dict()]
-    # Anything else is serialized as JSON text; FastMCP labels it text/plain
-    # when the resource declared no MIME type.
+    # Anything else is serialized as JSON text; the default label differs by
+    # path (FastMCP: text/plain for static resources, application/json for
+    # template reads), so the caller supplies it.
     return [
         ResourceContents(
             uri=uri,
             text=json.dumps(value, default=json_default),
-            mimeType=mime_type or "text/plain",
+            mimeType=mime_type or json_mime_default,
         ).to_dict()
     ]

@@ -235,6 +235,9 @@ class AnodizeMCP:
                         context_param=context_param,
                         tags=tags,
                         meta=meta,
+                        param_specs=build_params(
+                            func, skip=(context_param,) if context_param else ()
+                        ),
                     )
                 )
             else:
@@ -745,7 +748,8 @@ class AnodizeMCP:
             return self._tool_error(f"Unknown tool: {name!r}")
 
         arguments = params.get("arguments") or {}
-        progress_token = (params.get("_meta") or {}).get("progressToken")
+        request_meta = params.get("_meta") or {}
+        progress_token = request_meta.get("progressToken")
 
         try:
             coerced = coerce_arguments(
@@ -758,7 +762,11 @@ class AnodizeMCP:
         try:
             if tool.context_param:
                 coerced[tool.context_param] = Context(
-                    session, self, request_id, progress_token=progress_token
+                    session,
+                    self,
+                    request_id,
+                    progress_token=progress_token,
+                    meta=request_meta or None,
                 )
             value = run_maybe_async(tool.handler(**coerced))
         except ToolError as exc:
@@ -785,7 +793,7 @@ class AnodizeMCP:
         if isinstance(value, ToolResult):
             return self._tool_result_to_wire(value)
 
-        content, _ = normalize_tool_result(value)
+        content, auto_structured = normalize_tool_result(value)
         result: dict[str, Any] = {"content": content, "isError": False}
         if tool.output_schema is not None and value is not None and not is_content_value(value):
             payload = to_jsonable(value)
@@ -796,6 +804,10 @@ class AnodizeMCP:
                 result["_meta"] = {"fastmcp": {"wrap_result": True}}
             else:
                 result["structuredContent"] = payload
+        elif auto_structured is not None:
+            # An object-shaped value (dict, dataclass, model) is structured
+            # output even without a return annotation, as on FastMCP.
+            result["structuredContent"] = to_jsonable(auto_structured)
         return result
 
     @staticmethod
@@ -829,10 +841,18 @@ class AnodizeMCP:
             variables = template.match(uri)
             if variables is None:
                 continue
+            if template.param_specs is not None:
+                # Path variables arrive as strings; coerce to the annotated
+                # types, as FastMCP's pydantic validation does.
+                variables = coerce_arguments(template.param_specs, variables)
             value = self._invoke_resource(
                 template.handler, variables, template.context_param, session, request_id
             )
-            return normalize_resource_result(uri, value, template.mime_type)
+            # FastMCP serves JSON-shaped template reads as application/json
+            # (static resources default to text/plain).
+            return normalize_resource_result(
+                uri, value, template.mime_type, json_mime_default="application/json"
+            )
 
         raise NotFoundError(f"Unknown resource: {uri!r}")
 

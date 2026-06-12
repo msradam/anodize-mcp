@@ -359,8 +359,10 @@ def build_params(func: Callable[..., Any], skip: tuple[str, ...] = ()) -> list[P
     for name, param in signature.parameters.items():
         if name in skip:
             continue
-        if param.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
-            continue
+        if param.kind is inspect.Parameter.VAR_KEYWORD:
+            raise ValueError("Functions with **kwargs are not supported as tools")
+        if param.kind is inspect.Parameter.VAR_POSITIONAL:
+            raise ValueError("Functions with *args are not supported as tools")
         annotation = hints.get(name, param.annotation)
         _, metadata = _compat.unwrap_annotated(annotation)
         field = _field_from_metadata(metadata)
@@ -510,7 +512,7 @@ def output_schema_for(return_annotation: Any) -> tuple[Optional[dict[str, Any]],
         # A pydantic model return is object-shaped: unwrapped, like a dataclass.
         with contextlib.suppress(Exception):
             return _inline_refs(tp.model_json_schema()), False
-    if _compat.get_origin(tp) is dict:
+    if tp is dict or _compat.get_origin(tp) is dict:
         return type_to_schema(tp), False
     wrapped = {
         "type": "object",

@@ -27,6 +27,7 @@ class ResourceTemplateDef:
     context_param: Optional[str] = None
     tags: Any = None
     meta: Optional[dict[str, Any]] = None
+    param_specs: Optional[list[Any]] = None
 
     def describe(self) -> dict[str, Any]:
         out: dict[str, Any] = {"uriTemplate": self.uri_template, "name": self.name}
@@ -34,8 +35,8 @@ class ResourceTemplateDef:
             out["title"] = self.title
         if self.description is not None:
             out["description"] = self.description
-        if self.mime_type is not None:
-            out["mimeType"] = self.mime_type
+        # FastMCP lists text/plain when no MIME type was declared.
+        out["mimeType"] = self.mime_type or "text/plain"
         meta = build_meta(self.meta, self.tags)
         if meta:
             out["_meta"] = meta
