@@ -214,21 +214,29 @@ def normalize_tool_result(value: Any) -> tuple[list[dict[str, Any]], Optional[di
 
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         structured = dataclasses.asdict(value)
-        return [TextContent(json.dumps(structured, default=json_default)).to_dict()], structured
+        return [TextContent(_json_text(structured)).to_dict()], structured
 
     # A pydantic-style model returned by a tool becomes structured content.
     model_structured = _model_dump(value)
     if model_structured is not None:
-        text = json.dumps(model_structured, default=json_default)
-        return [TextContent(text).to_dict()], model_structured
+        return [TextContent(_json_text(model_structured)).to_dict()], model_structured
 
     if isinstance(value, dict):
-        return [TextContent(json.dumps(value, default=json_default)).to_dict()], value
+        return [TextContent(_json_text(value)).to_dict()], value
 
     if isinstance(value, (int, float, bool)):
         return [TextContent(json.dumps(value)).to_dict()], None
 
+    if isinstance(value, (list, tuple, set)):
+        # JSON text, as FastMCP serializes sequence returns (not Python repr).
+        return [TextContent(_json_text(to_jsonable(value))).to_dict()], None
+
     return [TextContent(str(value)).to_dict()], None
+
+
+def _json_text(value: Any) -> str:
+    # Compact separators, matching FastMCP's pydantic_core serialization.
+    return json.dumps(value, default=json_default, separators=(",", ":"))
 
 
 def normalize_resource_result(
@@ -245,11 +253,12 @@ def normalize_resource_result(
         return [ResourceContents(uri=uri, text=value, mimeType=mime_type or "text/plain").to_dict()]
     if isinstance(value, bytes):
         return [ResourceContents.from_bytes(uri, value, mime_type).to_dict()]
-    # Anything else is serialized as JSON text.
+    # Anything else is serialized as JSON text; FastMCP labels it text/plain
+    # when the resource declared no MIME type.
     return [
         ResourceContents(
             uri=uri,
             text=json.dumps(value, default=json_default),
-            mimeType=mime_type or "application/json",
+            mimeType=mime_type or "text/plain",
         ).to_dict()
     ]

@@ -96,6 +96,142 @@ class ToolResultTest(unittest.TestCase):
         self.assertIs(ReExported, ToolResult)
 
 
+class Round6ParityTest(unittest.TestCase):
+    def test_list_return_is_json_text(self):
+        mcp = AnodizeMCP("l")
+
+        @mcp.tool
+        def crew() -> list:
+            return ["Pinchy", "Bubbles"]
+
+        async def main():
+            async with Client(mcp) as c:
+                return await c.call_tool("crew", {})
+
+        result = asyncio.run(main())
+        self.assertEqual(result.text, '["Pinchy","Bubbles"]')
+
+    def test_client_error_is_tool_error(self):
+        from anodize_mcp import ToolError
+
+        mcp = AnodizeMCP("e")
+
+        @mcp.tool
+        def boom() -> str:
+            raise ValueError("bad")
+
+        async def main():
+            async with Client(mcp) as c:
+                try:
+                    await c.call_tool("boom", {})
+                except ToolError:
+                    return "caught"
+            return "missed"
+
+        self.assertEqual(asyncio.run(main()), "caught")
+
+    def test_array_constraints_emit_max_items(self):
+        from typing import Annotated
+
+        from anodize_mcp import Field
+
+        mcp = AnodizeMCP("s")
+
+        @mcp.tool
+        def names(values: Annotated[list, Field(max_length=10)]) -> int:
+            return len(values)
+
+        async def main():
+            async with Client(mcp) as c:
+                return (await c.list_tools())[0]
+
+        tool = asyncio.run(main())
+        prop = tool["inputSchema"]["properties"]["values"]
+        self.assertEqual(prop.get("maxItems"), 10)
+        self.assertNotIn("maxLength", prop)
+
+    def test_helper_return_annotations_have_no_output_schema(self):
+        from anodize_mcp.tools import ToolResult
+
+        mcp = AnodizeMCP("h")
+
+        @mcp.tool
+        def pic() -> Image:
+            return Image(data=b"x")
+
+        @mcp.tool
+        def explicit() -> ToolResult:
+            return ToolResult(content="x")
+
+        async def main():
+            async with Client(mcp) as c:
+                return {t["name"]: t for t in await c.list_tools()}
+
+        tools = asyncio.run(main())
+        self.assertNotIn("outputSchema", tools["pic"])
+        self.assertNotIn("outputSchema", tools["explicit"])
+
+    def test_empty_required_omitted_and_wrap_marker_present(self):
+        mcp = AnodizeMCP("r")
+
+        @mcp.tool
+        def zero() -> int:
+            return 1
+
+        async def main():
+            async with Client(mcp) as c:
+                return (await c.list_tools())[0]
+
+        tool = asyncio.run(main())
+        self.assertNotIn("required", tool["inputSchema"])
+        self.assertTrue(tool["outputSchema"]["x-fastmcp-wrap-result"])
+
+    def test_resource_mime_defaults_to_text_plain(self):
+        mcp = AnodizeMCP("m")
+
+        @mcp.resource("data://d")
+        def d() -> dict:
+            return {"a": 1}
+
+        async def main():
+            async with Client(mcp) as c:
+                listed = (await c.list_resources())[0]
+                contents = await c.read_resource("data://d")
+                return listed, contents
+
+        listed, contents = asyncio.run(main())
+        self.assertEqual(listed["mimeType"], "text/plain")
+        self.assertEqual(contents[0]["mimeType"], "text/plain")
+
+    def test_pydantic_schema_is_inlined(self):
+        try:
+            from pydantic import BaseModel
+        except ImportError:
+            self.skipTest("pydantic not installed")
+
+        class Inner(BaseModel):
+            x: int
+
+        class Outer(BaseModel):
+            inner: Inner
+
+        mcp = AnodizeMCP("p")
+
+        @mcp.tool
+        def take(o: Outer) -> int:
+            return o.inner.x
+
+        async def main():
+            async with Client(mcp) as c:
+                return (await c.list_tools())[0]
+
+        tool = asyncio.run(main())
+        prop = tool["inputSchema"]["properties"]["o"]
+        self.assertNotIn("$ref", json.dumps(prop))
+        self.assertNotIn("title", prop)
+        self.assertEqual(prop["properties"]["inner"]["properties"]["x"]["type"], "integer")
+
+
 class ResourceListTest(unittest.TestCase):
     def test_list_return_is_one_json_document(self):
         mcp = AnodizeMCP("r")

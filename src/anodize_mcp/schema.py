@@ -51,6 +51,9 @@ class FieldInfo:
     examples: Optional[list[Any]] = None
 
     def apply_to_schema(self, schema: dict[str, Any]) -> None:
+        # Length constraints map to minItems/maxItems on arrays, as in
+        # JSON Schema and pydantic.
+        is_array = schema.get("type") == "array"
         mapping = {
             "description": self.description,
             "title": self.title,
@@ -58,8 +61,8 @@ class FieldInfo:
             "exclusiveMinimum": self.gt,
             "maximum": self.le,
             "exclusiveMaximum": self.lt,
-            "minLength": self.min_length,
-            "maxLength": self.max_length,
+            "minItems" if is_array else "minLength": self.min_length,
+            "maxItems" if is_array else "maxLength": self.max_length,
             "pattern": self.pattern,
             "examples": self.examples,
         }
@@ -240,13 +243,47 @@ def _type_to_schema_inner(tp: Any) -> dict[str, Any]:
     if dataclasses.is_dataclass(tp) and isinstance(tp, type):
         return _dataclass_schema(tp)
 
-    # A pydantic-style model (the server's own choice) carries its own JSON Schema.
+    # A pydantic-style model (the server's own choice) carries its own JSON
+    # Schema; FastMCP inlines $refs and prunes titles, so match that.
     if isinstance(tp, type) and hasattr(tp, "model_json_schema"):
         with contextlib.suppress(Exception):
-            return tp.model_json_schema()
+            return _inline_refs(tp.model_json_schema())
 
     # Unknown: leave unconstrained rather than guess wrongly.
     return {}
+
+
+def _inline_refs(schema: dict[str, Any]) -> dict[str, Any]:
+    """Inline ``$defs``/``$ref`` and drop ``title`` keys, as FastMCP does."""
+    defs = schema.get("$defs", {})
+
+    def walk(node: Any, seen: tuple[str, ...]) -> Any:
+        if isinstance(node, dict):
+            ref = node.get("$ref", "")
+            if ref.startswith("#/$defs/"):
+                name = ref[len("#/$defs/") :]
+                if name in defs and name not in seen:
+                    merged = {**defs[name], **{k: v for k, v in node.items() if k != "$ref"}}
+                    return walk(merged, seen + (name,))
+                return node  # recursive model: keep the ref
+            return {k: walk(v, seen) for k, v in node.items() if k not in ("title", "$defs")}
+        if isinstance(node, list):
+            return [walk(item, seen) for item in node]
+        return node
+
+    out = walk(schema, ())
+    # A recursive model still needs its $defs resolvable.
+    if _contains_ref(out):
+        out["$defs"] = {k: walk(v, (k,)) for k, v in defs.items()}
+    return out
+
+
+def _contains_ref(node: Any) -> bool:
+    if isinstance(node, dict):
+        return "$ref" in node or any(_contains_ref(v) for v in node.values())
+    if isinstance(node, list):
+        return any(_contains_ref(item) for item in node)
+    return False
 
 
 def _infer_enum_type(values: list[Any]) -> Optional[str]:
@@ -358,12 +395,15 @@ def build_input_schema(specs: list[ParamSpec]) -> dict[str, Any]:
         properties[spec.name] = prop
         if spec.required:
             required.append(spec.name)
-    return {
+    schema: dict[str, Any] = {
         "type": "object",
         "properties": properties,
-        "required": required,
         "additionalProperties": False,
     }
+    # FastMCP omits the key when nothing is required.
+    if required:
+        schema["required"] = required
+    return schema
 
 
 _SECTION_RE = re.compile(
@@ -440,6 +480,12 @@ def output_schema_for(return_annotation: Any) -> tuple[Optional[dict[str, Any]],
     if tp is bytes:
         # FastMCP emits bytes as content only, with no structured output.
         return None, False
+    if isinstance(tp, type) and hasattr(tp, "to_content_block"):
+        # Image/Audio/File results are content, never structured output.
+        return None, False
+    if isinstance(tp, type) and tp.__name__ == "ToolResult":
+        # A ToolResult carries its own content and structured payload.
+        return None, False
     if dataclasses.is_dataclass(tp) and isinstance(tp, type):
         return _dataclass_schema(tp), False
     if _compat.get_origin(tp) is dict:
@@ -448,6 +494,9 @@ def output_schema_for(return_annotation: Any) -> tuple[Optional[dict[str, Any]],
         "type": "object",
         "properties": {"result": type_to_schema(tp)},
         "required": ["result"],
+        # FastMCP's schema-level wrap marker; its client honors _meta first
+        # but other consumers read this key.
+        "x-fastmcp-wrap-result": True,
     }
     return wrapped, True
 

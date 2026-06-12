@@ -28,8 +28,8 @@ class ResourceDef:
             out["title"] = self.title
         if self.description is not None:
             out["description"] = self.description
-        if self.mime_type is not None:
-            out["mimeType"] = self.mime_type
+        # FastMCP lists text/plain when no MIME type was declared.
+        out["mimeType"] = self.mime_type or "text/plain"
         if self.size is not None:
             out["size"] = self.size
         if self.annotations:

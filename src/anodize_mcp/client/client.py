@@ -25,7 +25,7 @@ from queue import Queue
 from typing import Any, Callable, Optional, Union
 
 from ..attrdict import wrap as _wrap
-from ..exceptions import INTERNAL_ERROR, McpError
+from ..exceptions import INTERNAL_ERROR, McpError, ToolError
 from ..protocol import (
     LATEST_PROTOCOL_VERSION,
     json_default,
@@ -40,15 +40,17 @@ from .transports import _make_transport
 logger = logging.getLogger(__name__)
 
 
-class ClientError(McpError):
+class ClientError(McpError, ToolError):
     """A client-side request failure.
 
-    Subclasses :class:`McpError` so it is catchable as the SDK's ``McpError`` and
-    exposes the structured ``.error`` (code/message/data).
+    Subclasses :class:`McpError` so it is catchable as the SDK's ``McpError``
+    (with the structured ``.error``), and :class:`ToolError` so FastMCP-style
+    ``except ToolError`` around ``call_tool`` ports unchanged.
     """
 
     def __init__(self, message: str, code: Optional[int] = None, data: Any = None):
         super().__init__(message, code=code if code is not None else INTERNAL_ERROR, data=data)
+        self.details = None
 
 
 class CallToolResult:
