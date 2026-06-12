@@ -12,6 +12,7 @@ import base64
 import contextlib
 import dataclasses
 import json
+from collections import abc as _abc
 from dataclasses import dataclass
 from typing import Any, Optional, Union
 
@@ -260,6 +261,11 @@ def normalize_tool_result(value: Any) -> tuple[list[dict[str, Any]], Optional[di
     if isinstance(value, (list, tuple, set)):
         # JSON text, as FastMCP serializes sequence returns (not Python repr).
         return [TextContent(_json_text(to_jsonable(value))).to_dict()], None
+
+    # Generators and other lazy iterables are exhausted and serialized like
+    # lists, as pydantic's serializer does; never their repr.
+    if isinstance(value, _abc.Iterator):
+        return normalize_tool_result(list(value))
 
     # Anything else serializes as JSON (datetimes as quoted ISO strings, and
     # so on), the way FastMCP's pydantic fallback does; str() is the last resort.

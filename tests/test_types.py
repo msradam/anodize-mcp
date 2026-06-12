@@ -888,6 +888,45 @@ class Round15ParityTest(unittest.TestCase):
         )
 
 
+class Round16ParityTest(unittest.TestCase):
+    def test_pattern_constraint_advertised_and_enforced(self):
+        from typing import Annotated
+
+        from anodize_mcp import Field
+
+        mcp = AnodizeMCP("pt")
+
+        @mcp.tool
+        def slug(s: Annotated[str, Field(pattern="^[a-z]+$")]) -> str:
+            return s
+
+        async def main():
+            async with Client(mcp) as c:
+                tool = (await c.list_tools())[0]
+                bad = await c.call_tool("slug", {"s": "ABC123"}, raise_on_error=False)
+                ok = await c.call_tool("slug", {"s": "abc"})
+                return tool, bad, ok
+
+        tool, bad, ok = asyncio.run(main())
+        self.assertEqual(tool["inputSchema"]["properties"]["s"]["pattern"], "^[a-z]+$")
+        self.assertTrue(bad.is_error)
+        self.assertEqual(ok.text, "abc")
+
+    def test_generator_return_serialized_as_list(self):
+        mcp = AnodizeMCP("gen")
+
+        @mcp.tool
+        def gen(n: int):
+            return (i * i for i in range(n))
+
+        async def main():
+            async with Client(mcp) as c:
+                return await c.call_tool("gen", {"n": 3})
+
+        result = asyncio.run(main())
+        self.assertEqual(json.loads(result.text), [0, 1, 4])
+
+
 class ResourceListTest(unittest.TestCase):
     def test_list_return_is_one_json_document(self):
         mcp = AnodizeMCP("r")

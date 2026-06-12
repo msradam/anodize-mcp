@@ -100,7 +100,7 @@ def Field(  # noqa: N802 - deliberately Field() to read like pydantic
     )
 
 
-_CONSTRAINT_ATTRS = ("ge", "gt", "le", "lt", "min_length", "max_length")
+_CONSTRAINT_ATTRS = ("ge", "gt", "le", "lt", "min_length", "max_length", "pattern")
 
 
 def _absorb_constraints(info: FieldInfo, obj: Any) -> None:
