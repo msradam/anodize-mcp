@@ -29,6 +29,7 @@ from ..exceptions import (
     RESOURCE_NOT_FOUND,
     InvalidParams,
     McpError,
+    NotFoundError,
     ResourceError,
     ToolError,
 )
@@ -67,7 +68,7 @@ class AnodizeMCP:
         *,
         instructions: Optional[str] = None,
         title: Optional[str] = None,
-        page_size: int = 100,
+        page_size: Optional[int] = None,
         list_page_size: Optional[int] = None,
         auth: Any = None,
         lifespan: Any = None,
@@ -81,7 +82,8 @@ class AnodizeMCP:
         self.version = version
         self.title = title
         self.instructions = instructions
-        # FastMCP names this list_page_size; accept either, preferring the explicit one.
+        # FastMCP names this list_page_size; accept either, preferring the
+        # explicit one. None (the FastMCP default) disables pagination.
         self.page_size = list_page_size if list_page_size is not None else page_size
         # A token verifier (object with verify_token); enforced by the HTTP
         # transport only. stdio has no network boundary, so it is ignored there.
@@ -575,6 +577,8 @@ class AnodizeMCP:
         raise McpError(f"method not found: {method}", code=METHOD_NOT_FOUND)
 
     def _paged(self, key: str, items: list[Any], params: dict[str, Any]) -> dict[str, Any]:
+        if self.page_size is None:
+            return {key: [item.describe() for item in items]}
         page, next_cursor = paginate(items, params.get("cursor"), self.page_size)
         result: dict[str, Any] = {key: [item.describe() for item in page]}
         if next_cursor is not None:
@@ -607,16 +611,16 @@ class AnodizeMCP:
         return result
 
     def _capabilities(self) -> dict[str, Any]:
-        caps: dict[str, Any] = {"logging": {}}
-        if self._tools:
-            caps["tools"] = {"listChanged": True}
-        if self._resources or self._templates:
-            caps["resources"] = {"subscribe": True, "listChanged": True}
-        if self._prompts:
-            caps["prompts"] = {"listChanged": True}
-        if self._completers:
-            caps["completions"] = {}
-        return caps
+        # Advertised unconditionally, as FastMCP does: components may be
+        # registered after initialize, and capability-gated clients would
+        # otherwise never look.
+        return {
+            "logging": {},
+            "tools": {"listChanged": True},
+            "resources": {"subscribe": True, "listChanged": True},
+            "prompts": {"listChanged": True},
+            "completions": {},
+        }
 
     def _handle_tool_call(
         self, params: dict[str, Any], session: Session, request_id: Any
@@ -624,7 +628,9 @@ class AnodizeMCP:
         name = params.get("name")
         tool = self._tools.get(name) if isinstance(name, str) else None
         if tool is None or name in self._disabled:
-            raise McpError(f"unknown tool: {name!r}", code=METHOD_NOT_FOUND)
+            # FastMCP reports this as a tool-level error result, not a protocol
+            # error, so clients using raise_on_error=False can handle it.
+            return self._tool_error(f"Unknown tool: {name!r}")
 
         arguments = params.get("arguments") or {}
         progress_token = (params.get("_meta") or {}).get("progressToken")
@@ -643,7 +649,12 @@ class AnodizeMCP:
         except McpError:
             raise
         except Exception as exc:  # noqa: BLE001
-            detail = "internal error" if self.mask_error_details else f"{type(exc).__name__}: {exc}"
+            # FastMCP's exact masked and unmasked error texts.
+            detail = (
+                f"Error calling tool {name!r}"
+                if self.mask_error_details
+                else f"Error calling tool {name!r}: {exc}"
+            )
             return self._tool_error(detail)
 
         if isinstance(value, ToolResult):
@@ -691,7 +702,7 @@ class AnodizeMCP:
             )
             return normalize_resource_result(uri, value, template.mime_type)
 
-        raise McpError(f"resource not found: {uri}", code=RESOURCE_NOT_FOUND)
+        raise NotFoundError(f"Unknown resource: {uri!r}")
 
     def _invoke_resource(
         self,
@@ -715,7 +726,7 @@ class AnodizeMCP:
         name = params.get("name")
         prompt = self._prompts.get(name) if isinstance(name, str) else None
         if prompt is None:
-            raise McpError(f"unknown prompt: {name!r}", code=INVALID_PARAMS)
+            raise NotFoundError(f"Unknown prompt: {name!r}")
 
         arguments = params.get("arguments") or {}
         coerced = coerce_arguments(prompt.param_specs, arguments)

@@ -90,7 +90,7 @@ class Client:
         log_handler: Optional[Callable[[dict[str, Any]], Any]] = None,
         progress_handler: Optional[Callable[[dict[str, Any]], Any]] = None,
         client_info: Optional[dict[str, Any]] = None,
-        timeout: float = 30.0,
+        timeout: Optional[float] = None,
         env: Optional[dict[str, str]] = None,
         auto_initialize: bool = True,
     ):
@@ -231,10 +231,11 @@ class Client:
         future: asyncio.Future[dict[str, Any]] = self._loop.create_future()
         self._pending[request_id] = future
         self._transport.send(make_request(request_id, method, params))
+        # No client-level timeout by default, matching FastMCP; transports
+        # still bound their own reads.
+        chosen = timeout if timeout is not None else self._timeout
         try:
-            response = await asyncio.wait_for(
-                future, timeout if timeout is not None else self._timeout
-            )
+            response = await future if chosen is None else await asyncio.wait_for(future, chosen)
         except asyncio.TimeoutError as exc:
             self._pending.pop(request_id, None)
             raise ClientError(f"request {method!r} timed out") from exc

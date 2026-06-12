@@ -140,7 +140,7 @@ class IntrospectionTest(unittest.TestCase):
         mcp.disable_tool("add")
         self.assertEqual(request(mcp, session, "tools/list", {})["result"]["tools"], [])
         resp = request(mcp, session, "tools/call", {"name": "add", "arguments": {"a": 1, "b": 1}})
-        self.assertEqual(resp["error"]["code"], -32601)
+        self.assertTrue(resp["result"]["isError"])
         mcp.enable_tool("add")
         self.assertEqual(len(request(mcp, session, "tools/list", {})["result"]["tools"]), 1)
 
@@ -173,7 +173,7 @@ class ConstructorFlagTest(unittest.TestCase):
 
         session, _ = init_session(mcp)
         result = request(mcp, session, "tools/call", {"name": "crash", "arguments": {}})
-        self.assertEqual(result["result"]["content"][0]["text"], "internal error")
+        self.assertEqual(result["result"]["content"][0]["text"], "Error calling tool 'crash'")
 
     def test_metadata_in_server_info(self):
         mcp = AnodizeMCP("m", icons=[{"src": "a.png"}], website_url="https://example.com")

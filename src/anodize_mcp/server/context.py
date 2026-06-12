@@ -215,7 +215,7 @@ class Context:
         messages: Any,
         *,
         system_prompt: Optional[str] = None,
-        max_tokens: int = 1000,
+        max_tokens: int = 512,
         temperature: Optional[float] = None,
         stop_sequences: Optional[list[str]] = None,
         model_preferences: Optional[Any] = None,

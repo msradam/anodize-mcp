@@ -34,6 +34,84 @@ def request(mcp, session, method, params=None, _id=1):
     return mcp.handle_message(msg, session)
 
 
+class ServerDefaultsTest(unittest.TestCase):
+    def test_no_pagination_by_default(self):
+        mcp = Anodize("p")
+        for i in range(120):
+            mcp.add_tool(lambda: "x", name=f"t{i}")
+        session, _ = init_session(mcp)
+        result = request(mcp, session, "tools/list")["result"]
+        self.assertEqual(len(result["tools"]), 120)
+        self.assertNotIn("nextCursor", result)
+
+    def test_capabilities_always_advertised(self):
+        mcp = Anodize("empty")
+        session, _ = init_session(mcp)
+        outgoing = queue.Queue()
+        fresh = mcp.new_session(send=outgoing.put)
+        resp = mcp.handle_message(
+            {
+                "jsonrpc": "2.0",
+                "id": 0,
+                "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {}},
+            },
+            fresh,
+        )
+        caps = resp["result"]["capabilities"]
+        for key in ("tools", "resources", "prompts", "logging"):
+            self.assertIn(key, caps)
+
+    def test_unknown_tool_is_tool_error_result(self):
+        mcp = Anodize("u")
+        session, _ = init_session(mcp)
+        resp = request(mcp, session, "tools/call", {"name": "nope", "arguments": {}})
+        result = resp["result"]
+        self.assertTrue(result["isError"])
+        self.assertEqual(result["content"][0]["text"], "Unknown tool: 'nope'")
+
+    def test_error_text_matches_fastmcp(self):
+        for masked, expected in (
+            (True, "Error calling tool 'boom'"),
+            (False, "Error calling tool 'boom': bad"),
+        ):
+            mcp = Anodize("e", mask_error_details=masked)
+
+            @mcp.tool
+            def boom() -> str:
+                raise ValueError("bad")
+
+            session, _ = init_session(mcp)
+            resp = request(mcp, session, "tools/call", {"name": "boom", "arguments": {}})
+            self.assertEqual(resp["result"]["content"][0]["text"], expected)
+
+    def test_session_id_is_a_string(self):
+        mcp = Anodize("s")
+        session = mcp.new_session(send=lambda m: None)
+        self.assertIsInstance(session.session_id, str)
+        self.assertTrue(session.session_id)
+
+    def test_debug_logs_forwarded_by_default(self):
+        mcp = Anodize("l")
+
+        @mcp.tool
+        def noisy(ctx: Context) -> str:
+            ctx.debug("dbg")
+            return "ok"
+
+        session, outgoing = init_session(mcp)
+        request(mcp, session, "tools/call", {"name": "noisy", "arguments": {}})
+        notifications = []
+        while not outgoing.empty():
+            notifications.append(outgoing.get())
+        levels = [
+            n["params"]["level"]
+            for n in notifications
+            if n.get("method") == "notifications/message"
+        ]
+        self.assertIn("debug", levels)
+
+
 class PaginationTest(unittest.TestCase):
     def test_cursor_pages(self):
         mcp = Anodize("p", page_size=2)
@@ -53,7 +131,7 @@ class PaginationTest(unittest.TestCase):
         self.assertNotIn("nextCursor", page3)
 
     def test_invalid_cursor(self):
-        mcp = Anodize("p")
+        mcp = Anodize("p", page_size=2)
         mcp.tool(name="a")(lambda: "x")
         session, _ = init_session(mcp)
         resp = request(mcp, session, "tools/list", {"cursor": "@@@not-base64@@@"})

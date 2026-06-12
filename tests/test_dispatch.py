@@ -194,7 +194,8 @@ class DispatchTest(unittest.TestCase):
 
     def test_unknown_tool(self):
         resp = self.call("tools/call", {"name": "nope", "arguments": {}})
-        self.assertEqual(resp["error"]["code"], -32601)
+        self.assertTrue(resp["result"]["isError"])
+        self.assertEqual(resp["result"]["content"][0]["text"], "Unknown tool: 'nope'")
 
     def test_context_logging(self):
         self.call("tools/call", {"name": "logs", "arguments": {}})
