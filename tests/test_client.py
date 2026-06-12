@@ -215,6 +215,13 @@ class InMemoryClientTest(unittest.IsolatedAsyncioTestCase):
                 r = await c.call_tool("ask", {})
                 self.assertEqual(r.text, "accept:thai")
 
+    async def test_elicit_result_accepts_content_keyword(self):
+        from anodize_mcp import ElicitResult
+
+        result = ElicitResult(action="accept", content={"a": 1})
+        self.assertEqual(result.data, {"a": 1})
+        self.assertEqual(ElicitResult(action="accept", data={"b": 2}).content, {"b": 2})
+
     async def test_star_args_progress_handler_gets_fastmcp_signature(self):
         mcp = AnodizeMCP("star")
 

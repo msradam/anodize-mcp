@@ -45,11 +45,19 @@ class ElicitResult:
 
     ``action`` is ``"accept"``, ``"decline"``, or ``"cancel"``. ``data`` is the
     user's content: a dataclass instance when ``elicit`` was given a dataclass,
-    otherwise the raw dict (matching FastMCP's typed ``.data``).
+    otherwise the raw dict (matching FastMCP's typed ``.data``). FastMCP's
+    client-side class names the payload ``content``; both spellings work here.
     """
 
     action: str
     data: Any = None
+    content: Any = None
+
+    def __post_init__(self) -> None:
+        if self.data is None and self.content is not None:
+            self.data = self.content
+        elif self.content is None and self.data is not None:
+            self.content = self.data
 
     @property
     def accepted(self) -> bool:
