@@ -125,6 +125,17 @@ async def _http(
     headers = _headers(scope)
 
     if path != manager.endpoint:
+        # FastMCP (Starlette redirect_slashes) 307-redirects /mcp/ to /mcp.
+        if path == manager.endpoint + "/":
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 307,
+                    "headers": [(b"location", manager.endpoint.encode("ascii"))],
+                }
+            )
+            await send({"type": "http.response.body", "body": b""})
+            return
         await _custom_route(server, method, path, scope, receive, send, headers)
         return
 

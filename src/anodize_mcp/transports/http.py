@@ -153,6 +153,16 @@ def _make_handler(manager: _Manager) -> type[BaseHTTPRequestHandler]:
         def _path_ok(self) -> bool:
             return urlsplit(self.path).path == manager.endpoint
 
+        def _redirect_slash(self) -> bool:
+            """307-redirect /mcp/ to /mcp, as FastMCP's Starlette app does."""
+            if urlsplit(self.path).path != manager.endpoint + "/":
+                return False
+            self.send_response(HTTPStatus.TEMPORARY_REDIRECT)
+            self.send_header("Location", manager.endpoint)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return True
+
         def _authenticate(self) -> tuple[bool, Any]:
             """Return ``(ok, access_token)``; send 401/403 and return False if not."""
             outcome, value = authorize_request(
@@ -227,7 +237,7 @@ def _make_handler(manager: _Manager) -> type[BaseHTTPRequestHandler]:
 
         def do_POST(self) -> None:  # noqa: N802
             if not self._path_ok():
-                if self._custom_route():
+                if self._redirect_slash() or self._custom_route():
                     return
                 self._send_status(HTTPStatus.NOT_FOUND)
                 return
@@ -300,7 +310,7 @@ def _make_handler(manager: _Manager) -> type[BaseHTTPRequestHandler]:
 
         def do_GET(self) -> None:  # noqa: N802
             if not self._path_ok():
-                if self._custom_route():
+                if self._redirect_slash() or self._custom_route():
                     return
                 self._send_status(HTTPStatus.NOT_FOUND)
                 return
@@ -324,7 +334,7 @@ def _make_handler(manager: _Manager) -> type[BaseHTTPRequestHandler]:
 
         def do_DELETE(self) -> None:  # noqa: N802
             if not self._path_ok():
-                if self._custom_route():
+                if self._redirect_slash() or self._custom_route():
                     return
                 self._send_status(HTTPStatus.NOT_FOUND)
                 return

@@ -169,6 +169,12 @@ class HttpStatefulTest(HttpTestBase):
         status, _, _ = self.post({"jsonrpc": "2.0", "id": 1, "method": "ping"}, path="/wrong")
         self.assertEqual(status, 404)
 
+    def test_trailing_slash_redirects(self):
+        # urllib does not auto-follow 307 for POST, so the status surfaces.
+        status, headers, _ = self.post({"jsonrpc": "2.0", "id": 1, "method": "ping"}, path="/mcp/")
+        self.assertEqual(status, 307)
+        self.assertEqual(headers.get("Location"), "/mcp")
+
 
 class HttpStatelessTest(HttpTestBase):
     stateless = True
