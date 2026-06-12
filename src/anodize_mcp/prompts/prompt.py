@@ -19,8 +19,8 @@ class PromptArgument:
         out: dict[str, Any] = {"name": self.name}
         if self.description is not None:
             out["description"] = self.description
-        if self.required:
-            out["required"] = True
+        # Always present, as FastMCP lists it, so arg.required reads on both.
+        out["required"] = self.required
         return out
 
 

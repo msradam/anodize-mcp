@@ -232,6 +232,127 @@ class Round6ParityTest(unittest.TestCase):
         self.assertEqual(prop["properties"]["inner"]["properties"]["x"]["type"], "integer")
 
 
+class Round7ParityTest(unittest.TestCase):
+    def test_int_keyed_dict_coercion(self):
+        from typing import Dict
+
+        mcp = AnodizeMCP("k")
+
+        @mcp.tool
+        def typed(m: Dict[int, str]) -> list:
+            return [k * 2 for k in m]
+
+        async def main():
+            async with Client(mcp) as c:
+                return await c.call_tool("typed", {"m": {"1": "a", "2": "b"}})
+
+        result = asyncio.run(main())
+        self.assertEqual(result.data, [2, 4])
+
+    def test_enum_keyed_dict_emits_property_names(self):
+        import enum
+        from typing import Dict
+
+        class Color(enum.Enum):
+            RED = "red"
+            BLUE = "blue"
+
+        mcp = AnodizeMCP("e")
+
+        @mcp.tool
+        def take(m: Dict[Color, int]) -> int:
+            return len(m)
+
+        async def main():
+            async with Client(mcp) as c:
+                return (await c.list_tools())[0]
+
+        tool = asyncio.run(main())
+        prop = tool["inputSchema"]["properties"]["m"]
+        self.assertEqual(sorted(prop["propertyNames"]["enum"]), ["blue", "red"])
+
+    def test_prompt_optional_arg_lists_required_false(self):
+        from typing import Optional
+
+        mcp = AnodizeMCP("p")
+
+        @mcp.prompt
+        def review(code: str, style: Optional[str] = None) -> str:
+            return code
+
+        async def main():
+            async with Client(mcp) as c:
+                return (await c.list_prompts())[0]
+
+        prompt = asyncio.run(main())
+        args = {a["name"]: a for a in prompt["arguments"]}
+        self.assertTrue(args["code"]["required"])
+        self.assertFalse(args["style"]["required"])
+
+    def test_bare_container_schemas_keep_vacuous_keywords(self):
+        mcp = AnodizeMCP("v")
+
+        @mcp.tool
+        def take(items: list, mapping: dict) -> int:
+            return len(items) + len(mapping)
+
+        async def main():
+            async with Client(mcp) as c:
+                return (await c.list_tools())[0]
+
+        tool = asyncio.run(main())
+        props = tool["inputSchema"]["properties"]
+        self.assertEqual(props["items"]["items"], {})
+        self.assertIs(props["mapping"]["additionalProperties"], True)
+
+    def test_progress_handler_receives_floats(self):
+        from anodize_mcp import Context
+
+        mcp = AnodizeMCP("f")
+
+        @mcp.tool
+        async def prog(ctx: Context) -> str:
+            await ctx.report_progress(1, 2)
+            return "ok"
+
+        events = []
+
+        async def main():
+            async with Client(mcp, progress_handler=lambda p, t, m: events.append((p, t))) as c:
+                await c.call_tool("prog", {})
+
+        asyncio.run(main())
+        self.assertEqual(events, [(1.0, 2.0)])
+        self.assertIsInstance(events[0][0], float)
+
+    def test_default_version_is_package_version(self):
+        import anodize_mcp
+
+        self.assertEqual(AnodizeMCP("x").version, anodize_mcp.__version__)
+        self.assertEqual(AnodizeMCP("x", version="9.9").version, "9.9")
+
+    def test_callable_middleware_runs(self):
+        mcp = AnodizeMCP("c")
+        counts = {"n": 0}
+
+        async def counting(context, call_next):
+            counts["n"] += 1
+            return await call_next(context)
+
+        mcp.add_middleware(counting)
+
+        @mcp.tool
+        def t() -> str:
+            return "x"
+
+        async def main():
+            async with Client(mcp) as c:
+                await c.call_tool("t", {})
+
+        asyncio.run(main())
+        self.assertGreater(counts["n"], 0)
+
+
 class ResourceListTest(unittest.TestCase):
     def test_list_return_is_one_json_document(self):
         mcp = AnodizeMCP("r")

@@ -154,13 +154,13 @@ _PRIMITIVE_SCHEMAS: dict[Any, dict[str, Any]] = {
     uuid.UUID: {"type": "string", "format": "uuid"},
     Decimal: {"type": "number"},
     bytes: {"type": "string", "contentEncoding": "base64"},
-    # Bare (unsubscripted) container annotations: keep the JSON type even though
-    # the item type is unknown.
-    list: {"type": "array"},
-    tuple: {"type": "array"},
-    set: {"type": "array", "uniqueItems": True},
-    frozenset: {"type": "array", "uniqueItems": True},
-    dict: {"type": "object"},
+    # Bare (unsubscripted) container annotations. FastMCP keeps the vacuous
+    # items/additionalProperties keywords, so emit them too.
+    list: {"type": "array", "items": {}},
+    tuple: {"type": "array", "items": {}},
+    set: {"type": "array", "items": {}, "uniqueItems": True},
+    frozenset: {"type": "array", "items": {}, "uniqueItems": True},
+    dict: {"type": "object", "additionalProperties": True},
 }
 
 
@@ -237,7 +237,17 @@ def _type_to_schema_inner(tp: Any) -> dict[str, Any]:
     if origin is dict:
         args = _compat.get_args(tp)
         value_schema = _type_to_schema_inner(args[1]) if len(args) == 2 else {}
-        return {"type": "object", "additionalProperties": value_schema or True}
+        dict_schema: dict[str, Any] = {
+            "type": "object",
+            "additionalProperties": value_schema or True,
+        }
+        # A constrained key type (enum, Literal) surfaces as propertyNames,
+        # as pydantic emits it.
+        if len(args) == 2 and args[0] is not str:
+            key_schema = _type_to_schema_inner(args[0])
+            if "enum" in key_schema:
+                dict_schema["propertyNames"] = key_schema
+        return dict_schema
 
     # Dataclasses become nested objects.
     if dataclasses.is_dataclass(tp) and isinstance(tp, type):
@@ -629,7 +639,12 @@ def _coerce(value: Any, tp: Any, path: str) -> Any:
             raise InvalidParams(f"{path}: invalid, expected object")
         args = _compat.get_args(tp)
         if len(args) == 2:
-            return {k: _coerce(v, args[1], f"{path}.{k}") for k, v in value.items()}
+            # JSON object keys arrive as strings; coerce them to the declared
+            # key type (int keys, enum keys) the way pydantic does.
+            return {
+                _coerce(k, args[0], f"{path}<key>"): _coerce(v, args[1], f"{path}.{k}")
+                for k, v in value.items()
+            }
         return dict(value)
 
     if dataclasses.is_dataclass(tp) and isinstance(tp, type):

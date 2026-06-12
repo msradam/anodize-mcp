@@ -61,6 +61,21 @@ F = TypeVar("F", bound=Callable[..., Any])
 _MAX_COMPLETION_VALUES = 100
 
 
+def _package_version() -> str:
+    from .. import __version__
+
+    return __version__
+
+
+def _has_middleware_hooks(mw: Any) -> bool:
+    from .middleware.middleware import OPERATION_HOOKS, Middleware
+
+    if isinstance(mw, Middleware):
+        return True
+    hooks = ("on_message", "on_request", "on_notification", *OPERATION_HOOKS.values())
+    return any(callable(getattr(mw, hook, None)) for hook in hooks)
+
+
 def _wrap_hook(handler: Callable[..., Any], next_call: Callable[..., Any]) -> Callable[..., Any]:
     async def call(ctx: Any) -> Any:
         out = handler(ctx, next_call)
@@ -75,7 +90,7 @@ class AnodizeMCP:
     def __init__(
         self,
         name: str = "AnodizeMCP",
-        version: str = "0.1.0",
+        version: Optional[str] = None,
         *,
         instructions: Optional[str] = None,
         title: Optional[str] = None,
@@ -90,7 +105,8 @@ class AnodizeMCP:
         strict_input_validation: bool = False,
     ):
         self.name = name
-        self.version = version
+        # FastMCP defaults serverInfo.version to its own package version.
+        self.version = version if version is not None else _package_version()
         self.title = title
         self.instructions = instructions
         # FastMCP names this list_page_size; accept either, preferring the
@@ -526,9 +542,14 @@ class AnodizeMCP:
             stages.append(operation_hook)
 
         # Compose per middleware, as FastMCP does: every hook of the first
-        # middleware wraps every hook of the second, and so on.
+        # middleware wraps every hook of the second, and so on. A plain
+        # callable (FastMCP invokes middleware via __call__) wraps the whole
+        # chain in one step.
         call: Any = terminal
         for mw in reversed(self._middleware):
+            if not _has_middleware_hooks(mw) and callable(mw):
+                call = _wrap_hook(mw, call)
+                continue
             for stage in reversed(stages):
                 handler = getattr(mw, stage, None)
                 if handler is not None:

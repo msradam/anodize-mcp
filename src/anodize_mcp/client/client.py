@@ -488,11 +488,17 @@ def _positional_count(fn: Callable[..., Any]) -> int:
 async def _call_progress(handler: Callable[..., Any], params: dict[str, Any]) -> Any:
     """Invoke a progress handler, supporting both anodize's ``handler(params)``
     and FastMCP's ``handler(progress, total, message)`` signatures."""
+
+    def as_float(key: str) -> Optional[float]:
+        value = params.get(key)
+        # FastMCP's typed params deliver floats.
+        return float(value) if isinstance(value, (int, float)) else value
+
     n = _positional_count(handler)
     if n >= 3:
-        out = handler(params.get("progress"), params.get("total"), params.get("message"))
+        out = handler(as_float("progress"), as_float("total"), params.get("message"))
     elif n == 2:
-        out = handler(params.get("progress"), params.get("total"))
+        out = handler(as_float("progress"), as_float("total"))
     else:
         out = handler(_wrap(params))
     if inspect.iscoroutine(out):
