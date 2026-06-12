@@ -771,6 +771,61 @@ class Round13ParityTest(unittest.TestCase):
             os.unlink(path)
 
 
+class Round14ParityTest(unittest.TestCase):
+    def test_disable_enable_by_names_and_tags(self):
+        mcp = AnodizeMCP("vis")
+
+        @mcp.tool
+        def alpha() -> str:
+            return "a"
+
+        @mcp.tool(tags={"beta-group"})
+        def beta() -> str:
+            return "b"
+
+        async def main():
+            async with Client(mcp) as c:
+                mcp.disable(names={"alpha"}, tags={"beta-group"})
+                hidden = sorted(t["name"] for t in await c.list_tools())
+                blocked = await c.call_tool("alpha", {}, raise_on_error=False)
+                mcp.enable(names={"alpha"}, keys=["tool:beta@"])
+                restored = sorted(t["name"] for t in await c.list_tools())
+                return hidden, blocked, restored
+
+        hidden, blocked, restored = asyncio.run(main())
+        self.assertEqual(hidden, [])
+        self.assertTrue(blocked.is_error)
+        self.assertEqual(restored, ["alpha", "beta"])
+
+    def test_client_follows_trailing_slash_redirect(self):
+        import threading
+        from http.server import ThreadingHTTPServer
+
+        from anodize_mcp.transports.http import _make_handler, _Manager
+
+        mcp = AnodizeMCP("rs")
+
+        @mcp.tool
+        def hello() -> str:
+            return "hi"
+
+        manager = _Manager(server=mcp, endpoint="/mcp", allowed_origins=None, stateless=True)
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), _make_handler(manager))
+        httpd.daemon_threads = True
+        port = httpd.server_address[1]
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        try:
+
+            async def main():
+                async with Client(f"http://127.0.0.1:{port}/mcp/", timeout=10) as c:
+                    return (await c.call_tool("hello", {})).text
+
+            self.assertEqual(asyncio.run(main()), "hi")
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+
 class ResourceListTest(unittest.TestCase):
     def test_list_return_is_one_json_document(self):
         mcp = AnodizeMCP("r")

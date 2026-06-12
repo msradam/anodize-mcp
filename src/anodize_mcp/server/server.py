@@ -425,6 +425,54 @@ class AnodizeMCP:
             self._disabled.discard(name)
             self.notify_tools_changed()
 
+    def disable(
+        self,
+        *,
+        names: Any = None,
+        keys: Any = None,
+        tags: Any = None,
+        **_ignored: Any,
+    ) -> None:
+        """Hide matching tools, FastMCP 3.x style.
+
+        ``names`` is a set of component names; ``keys`` accepts FastMCP's
+        ``"tool:name@version"`` form; ``tags`` hides every tool carrying any
+        of the given tags. Version and provider filters are not implemented.
+        """
+        for name in self._visibility_matches(names, keys, tags):
+            self._disabled.add(name)
+        self.notify_tools_changed()
+
+    def enable(
+        self,
+        *,
+        names: Any = None,
+        keys: Any = None,
+        tags: Any = None,
+        **_ignored: Any,
+    ) -> None:
+        """Reverse :meth:`disable` for the matching tools."""
+        for name in self._visibility_matches(names, keys, tags):
+            self._disabled.discard(name)
+        self.notify_tools_changed()
+
+    def _visibility_matches(self, names: Any, keys: Any, tags: Any) -> set[str]:
+        matched: set[str] = set()
+        if names:
+            matched.update(names)
+        for key in keys or ():
+            # "tool:name@version" with optional type and version parts.
+            text = str(key)
+            if ":" in text:
+                text = text.split(":", 1)[1]
+            matched.add(text.split("@", 1)[0])
+        if tags:
+            wanted = set(tags)
+            for tool in self._tools.values():
+                if tool.tags and wanted & set(tool.tags):
+                    matched.add(tool.name)
+        return matched
+
     # ------------------------------------------------------------------
     # Dynamic registration / notifications
     # ------------------------------------------------------------------

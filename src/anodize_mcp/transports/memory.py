@@ -31,7 +31,8 @@ def serve_memory(
     inbox: Queue[Any],
     outbox: Queue[Any],
     *,
-    max_workers: int = 8,
+    # Matches anyio's default thread limiter, which FastMCP runs sync tools on.
+    max_workers: int = 40,
 ) -> None:
     """Read client messages from ``inbox``, write server messages to ``outbox``."""
     session = server.new_session(send=lambda m: outbox.put(_jsonsafe(m)))

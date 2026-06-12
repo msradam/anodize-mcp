@@ -13,6 +13,7 @@ import subprocess
 import sys
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from queue import Queue
@@ -148,12 +149,7 @@ class StreamableHttpTransport:
             return
         headers = self._request_headers("application/json, text/event-stream")
         headers["Content-Type"] = "application/json"
-        req = urllib.request.Request(
-            self._url,
-            data=json.dumps(message, default=json_default).encode("utf-8"),
-            headers=headers,
-            method="POST",
-        )
+        data = json.dumps(message, default=json_default).encode("utf-8")
 
         # Any failure must resolve the pending request, or the caller waits out
         # its full timeout for an answer that can never arrive.
@@ -163,13 +159,26 @@ class StreamableHttpTransport:
             if request_id is not None and self._outbox is not None:
                 self._outbox.put(make_error(request_id, -32000, text))
 
-        try:
-            # A read timeout keeps a misbehaving server from hanging the client.
-            resp: Any = urllib.request.urlopen(req, timeout=self._timeout)  # noqa: S310
-        except urllib.error.HTTPError as exc:
-            resp = exc  # a 4xx/5xx may still carry a JSON-RPC error body
-        except OSError as exc:
-            fail(f"connection failed: {exc}")
+        resp: Any = None
+        for _ in range(3):  # follow a couple of redirects (e.g. /mcp/ to /mcp)
+            req = urllib.request.Request(self._url, data=data, headers=headers, method="POST")
+            try:
+                # A read timeout keeps a misbehaving server from hanging the client.
+                resp = urllib.request.urlopen(req, timeout=self._timeout)  # noqa: S310
+            except urllib.error.HTTPError as exc:
+                # urllib refuses to auto-redirect a POST; do it ourselves and
+                # remember the resolved URL for subsequent requests.
+                location = exc.headers.get("Location") if exc.headers else None
+                if exc.code in (301, 302, 307, 308) and location:
+                    self._url = urllib.parse.urljoin(self._url, location)
+                    continue
+                resp = exc  # a 4xx/5xx may still carry a JSON-RPC error body
+            except OSError as exc:
+                fail(f"connection failed: {exc}")
+                return
+            break
+        if resp is None:
+            fail("too many redirects")
             return
         with resp:
             try:

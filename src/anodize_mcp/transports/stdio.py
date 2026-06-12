@@ -33,7 +33,8 @@ def serve_stdio(
     in_stream: Optional[IO[bytes]] = None,
     out_stream: Optional[IO[bytes]] = None,
     *,
-    max_workers: int = 8,
+    # Matches anyio's default thread limiter, which FastMCP runs sync tools on.
+    max_workers: int = 40,
 ) -> None:
     inp = in_stream if in_stream is not None else sys.stdin.buffer
     out = out_stream if out_stream is not None else sys.stdout.buffer
