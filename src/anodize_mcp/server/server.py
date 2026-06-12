@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import inspect
+import threading
 import warnings
 import weakref
 from typing import Any, Callable, Optional, TypeVar
@@ -29,6 +30,7 @@ from ..exceptions import (
     RESOURCE_NOT_FOUND,
     InvalidParams,
     McpError,
+    NotFoundError,
     ResourceError,
     ToolError,
 )
@@ -49,6 +51,7 @@ from ..schema import (
     coerce_arguments,
     doc_summary,
     output_schema_for,
+    parse_param_docs,
 )
 from ..session import LOG_LEVELS, Session
 from ..tools.tool import ToolDef, ToolResult
@@ -59,15 +62,40 @@ F = TypeVar("F", bound=Callable[..., Any])
 _MAX_COMPLETION_VALUES = 100
 
 
+def _package_version() -> str:
+    from .. import __version__
+
+    return __version__
+
+
+def _has_middleware_hooks(mw: Any) -> bool:
+    from .middleware.middleware import OPERATION_HOOKS, Middleware
+
+    if isinstance(mw, Middleware):
+        return True
+    hooks = ("on_message", "on_request", "on_notification", *OPERATION_HOOKS.values())
+    return any(callable(getattr(mw, hook, None)) for hook in hooks)
+
+
+def _wrap_hook(handler: Callable[..., Any], next_call: Callable[..., Any]) -> Callable[..., Any]:
+    async def call(ctx: Any) -> Any:
+        out = handler(ctx, next_call)
+        if inspect.iscoroutine(out):
+            out = await out
+        return out
+
+    return call
+
+
 class AnodizeMCP:
     def __init__(
         self,
         name: str = "AnodizeMCP",
-        version: str = "0.1.0",
+        version: Optional[str] = None,
         *,
         instructions: Optional[str] = None,
         title: Optional[str] = None,
-        page_size: int = 100,
+        page_size: Optional[int] = None,
         list_page_size: Optional[int] = None,
         auth: Any = None,
         lifespan: Any = None,
@@ -78,10 +106,12 @@ class AnodizeMCP:
         strict_input_validation: bool = False,
     ):
         self.name = name
-        self.version = version
+        # FastMCP defaults serverInfo.version to its own package version.
+        self.version = version if version is not None else _package_version()
         self.title = title
         self.instructions = instructions
-        # FastMCP names this list_page_size; accept either, preferring the explicit one.
+        # FastMCP names this list_page_size; accept either, preferring the
+        # explicit one. None (the FastMCP default) disables pagination.
         self.page_size = list_page_size if list_page_size is not None else page_size
         # A token verifier (object with verify_token); enforced by the HTTP
         # transport only. stdio has no network boundary, so it is ignored there.
@@ -107,6 +137,8 @@ class AnodizeMCP:
         self._lifespan_state: Any = None
         self._lifespan_cm: Any = None
         self._lifespan_async = False
+        self._lifespan_refs = 0
+        self._lifespan_lock = threading.Lock()
 
     def _check_duplicate(self, kind: str, name: str, registry: Any) -> None:
         if name not in registry:
@@ -179,12 +211,19 @@ class AnodizeMCP:
         meta: Optional[dict[str, Any]] = None,
     ) -> Callable[[F], F]:
         """Register a function as a resource or, if ``uri`` has ``{vars}``, a template."""
+        if callable(uri):
+            # Bare @mcp.resource swallows the function silently; FastMCP raises.
+            raise TypeError(
+                "The @resource decorator requires a URI: use @mcp.resource('uri://...')"
+            )
 
         def decorator(func: F) -> F:
             context_param = _find_context_param(func)
             res_name: str = name if name is not None else getattr(func, "__name__", "resource")
-            desc = description or _docstring(func)
             if "{" in uri:
+                # Templates have no per-parameter description slot, so FastMCP
+                # keeps the whole docstring (Args section included).
+                desc = description or inspect.getdoc(func)
                 pattern, var_names = compile_uri_template(uri)
                 self._templates.append(
                     ResourceTemplateDef(
@@ -199,6 +238,9 @@ class AnodizeMCP:
                         context_param=context_param,
                         tags=tags,
                         meta=meta,
+                        param_specs=build_params(
+                            func, skip=(context_param,) if context_param else ()
+                        ),
                     )
                 )
             else:
@@ -208,7 +250,7 @@ class AnodizeMCP:
                     handler=func,
                     name=res_name,
                     title=title,
-                    description=desc,
+                    description=description or _docstring(func),
                     mime_type=mime_type,
                     size=size,
                     annotations=_normalize_annotations(annotations),
@@ -383,6 +425,52 @@ class AnodizeMCP:
             self._disabled.discard(name)
             self.notify_tools_changed()
 
+    def disable(
+        self,
+        *,
+        names: Any = None,
+        keys: Any = None,
+        tags: Any = None,
+        **_ignored: Any,
+    ) -> None:
+        """Hide matching tools, FastMCP 3.x style.
+
+        ``names`` is a set of component names; ``keys`` accepts FastMCP's
+        ``"tool:name@version"`` form; ``tags`` hides every tool carrying any
+        of the given tags. Version and provider filters are not implemented.
+        """
+        self._disabled.update(self._visibility_matches(names, keys, tags))
+        self.notify_tools_changed()
+
+    def enable(
+        self,
+        *,
+        names: Any = None,
+        keys: Any = None,
+        tags: Any = None,
+        **_ignored: Any,
+    ) -> None:
+        """Reverse :meth:`disable` for the matching tools."""
+        self._disabled.difference_update(self._visibility_matches(names, keys, tags))
+        self.notify_tools_changed()
+
+    def _visibility_matches(self, names: Any, keys: Any, tags: Any) -> set[str]:
+        matched: set[str] = set()
+        if names:
+            matched.update(names)
+        for key in keys or ():
+            # "tool:name@version" with optional type and version parts.
+            text = str(key)
+            if ":" in text:
+                text = text.split(":", 1)[1]
+            matched.add(text.split("@", 1)[0])
+        if tags:
+            wanted = set(tags)
+            for tool in self._tools.values():
+                if tool.tags and wanted & set(tool.tags):
+                    matched.add(tool.name)
+        return matched
+
     # ------------------------------------------------------------------
     # Dynamic registration / notifications
     # ------------------------------------------------------------------
@@ -485,44 +573,127 @@ class AnodizeMCP:
         from .middleware.middleware import OPERATION_HOOKS, MiddlewareContext
 
         mw_context: MiddlewareContext = MiddlewareContext(
-            message=params,
+            message=attr_wrap(params),
             method=method,
             source="client",
             type="notification" if is_notification else "request",
             fastmcp_context=Context(session, self, request_id),
         )
 
-        async def terminal(_ctx: MiddlewareContext) -> Any:
-            return self._route(method, params, session, request_id)
+        domain_terminal, rewrap = self._middleware_shapes(method, params, session, request_id)
+
+        async def terminal(ctx: MiddlewareContext) -> Any:
+            # Honor context.copy(message=...): the terminal reads the message
+            # that reached it, not the original params.
+            effective = dict(ctx.message) if isinstance(ctx.message, dict) else params
+            return domain_terminal(effective)
 
         stages = ["on_message", "on_notification" if is_notification else "on_request"]
         operation_hook = OPERATION_HOOKS.get(method)
         if operation_hook is not None:
             stages.append(operation_hook)
 
+        # Compose per middleware, as FastMCP does: every hook of the first
+        # middleware wraps every hook of the second, and so on. A plain
+        # callable (FastMCP invokes middleware via __call__) wraps the whole
+        # chain in one step.
         call: Any = terminal
-        for stage in reversed(stages):
-            call = self._wrap_stage(stage, call)
-        return run_maybe_async(call(mw_context))
+        for mw in reversed(self._middleware):
+            if not _has_middleware_hooks(mw) and callable(mw):
+                call = _wrap_hook(mw, call)
+                continue
+            for stage in reversed(stages):
+                handler = getattr(mw, stage, None)
+                if handler is not None:
+                    call = _wrap_hook(handler, call)
+        if method == "tools/call":
+            # FastMCP converts any tools/call pipeline failure (middleware
+            # included) into a tool-level isError result.
+            try:
+                return rewrap(run_maybe_async(call(mw_context)))
+            except McpError as exc:
+                return self._tool_error(exc.message)
+            except Exception as exc:  # noqa: BLE001
+                return self._tool_error(str(exc))
+        return rewrap(run_maybe_async(call(mw_context)))
 
-    def _wrap_stage(self, stage_name: str, terminal: Any) -> Any:
-        handlers = [getattr(mw, stage_name) for mw in self._middleware if hasattr(mw, stage_name)]
+    def _middleware_shapes(
+        self, method: str, params: dict[str, Any], session: Session, request_id: Any
+    ) -> tuple[Callable[[dict[str, Any]], Any], Callable[[Any], Any]]:
+        """The terminal and re-enveloping pair for one middleware dispatch.
 
-        def build(index: int) -> Any:
-            if index >= len(handlers):
-                return terminal
+        Operation hooks see FastMCP's domain shapes (a ToolResult from
+        tools/call, component lists from the list methods, the contents list
+        from resources/read); the wire envelope and pagination are applied
+        after the chain returns. A hook that returns the wire dict directly
+        (the pre-0.7 anodize convention) still works.
+        """
+        list_keys = {
+            "tools/list": "tools",
+            "resources/list": "resources",
+            "resources/templates/list": "resourceTemplates",
+            "prompts/list": "prompts",
+        }
+        if method in list_keys:
+            key = list_keys[method]
 
-            next_call = build(index + 1)
+            def list_terminal(p: dict[str, Any]) -> Any:
+                return self._list_components(method)
 
-            async def call(ctx: Any) -> Any:
-                out = handlers[index](ctx, next_call)
-                if inspect.iscoroutine(out):
-                    out = await out
-                return out
+            def list_rewrap(result: Any) -> Any:
+                if isinstance(result, dict):
+                    return result
+                return self._paged(key, list(result), params)
 
-            return call
+            return list_terminal, list_rewrap
 
-        return build(0)
+        if method == "tools/call":
+
+            def call_terminal(p: dict[str, Any]) -> Any:
+                wire = self._handle_tool_call(p, session, request_id)
+                result = ToolResult(
+                    content=attr_wrap(wire.get("content", [])),
+                    structured_content=wire.get("structuredContent"),
+                    meta=wire.get("_meta"),
+                    is_error=wire.get("isError", False),
+                )
+                return result
+
+            def call_rewrap(result: Any) -> Any:
+                if isinstance(result, ToolResult):
+                    return self._tool_result_to_wire(result)
+                return result
+
+            return call_terminal, call_rewrap
+
+        if method == "resources/read":
+
+            def read_terminal(p: dict[str, Any]) -> Any:
+                # Attribute-wrapped so middleware reading result.contents
+                # (FastMCP 3.x's ResourceResult shape) works.
+                return attr_wrap(self._route(method, p, session, request_id))
+
+            def read_rewrap(result: Any) -> Any:
+                if isinstance(result, dict):
+                    return result
+                return {"contents": list(result)}
+
+            return read_terminal, read_rewrap
+
+        def default_terminal(p: dict[str, Any]) -> Any:
+            result = self._route(method, p, session, request_id)
+            return attr_wrap(result) if isinstance(result, dict) else result
+
+        return default_terminal, lambda result: result
+
+    def _list_components(self, method: str) -> list[Any]:
+        if method == "tools/list":
+            return [t for t in self._tools.values() if t.name not in self._disabled]
+        if method == "resources/list":
+            return list(self._resources.values())
+        if method == "resources/templates/list":
+            return self._templates.copy()
+        return list(self._prompts.values())
 
     def _route(self, method: str, params: dict[str, Any], session: Session, request_id: Any) -> Any:
         if method == "initialize":
@@ -570,6 +741,8 @@ class AnodizeMCP:
         raise McpError(f"method not found: {method}", code=METHOD_NOT_FOUND)
 
     def _paged(self, key: str, items: list[Any], params: dict[str, Any]) -> dict[str, Any]:
+        if self.page_size is None:
+            return {key: [item.describe() for item in items]}
         page, next_cursor = paginate(items, params.get("cursor"), self.page_size)
         result: dict[str, Any] = {key: [item.describe() for item in page]}
         if next_cursor is not None:
@@ -602,16 +775,16 @@ class AnodizeMCP:
         return result
 
     def _capabilities(self) -> dict[str, Any]:
-        caps: dict[str, Any] = {"logging": {}}
-        if self._tools:
-            caps["tools"] = {"listChanged": True}
-        if self._resources or self._templates:
-            caps["resources"] = {"subscribe": True, "listChanged": True}
-        if self._prompts:
-            caps["prompts"] = {"listChanged": True}
-        if self._completers:
-            caps["completions"] = {}
-        return caps
+        # Advertised unconditionally, as FastMCP does: components may be
+        # registered after initialize, and capability-gated clients would
+        # otherwise never look.
+        return {
+            "logging": {},
+            "tools": {"listChanged": True},
+            "resources": {"subscribe": True, "listChanged": True},
+            "prompts": {"listChanged": True},
+            "completions": {},
+        }
 
     def _handle_tool_call(
         self, params: dict[str, Any], session: Session, request_id: Any
@@ -619,18 +792,30 @@ class AnodizeMCP:
         name = params.get("name")
         tool = self._tools.get(name) if isinstance(name, str) else None
         if tool is None or name in self._disabled:
-            raise McpError(f"unknown tool: {name!r}", code=METHOD_NOT_FOUND)
+            # FastMCP reports this as a tool-level error result, not a protocol
+            # error, so clients using raise_on_error=False can handle it.
+            return self._tool_error(f"Unknown tool: {name!r}")
 
         arguments = params.get("arguments") or {}
-        progress_token = (params.get("_meta") or {}).get("progressToken")
+        request_meta = params.get("_meta") or {}
+        progress_token = request_meta.get("progressToken")
 
         try:
             coerced = coerce_arguments(
                 tool.param_specs, arguments, strict=self.strict_input_validation
             )
+        except McpError as exc:
+            # FastMCP reports input validation failures as isError results.
+            return self._tool_error(exc.message)
+
+        try:
             if tool.context_param:
                 coerced[tool.context_param] = Context(
-                    session, self, request_id, progress_token=progress_token
+                    session,
+                    self,
+                    request_id,
+                    progress_token=progress_token,
+                    meta=request_meta or None,
                 )
             value = run_maybe_async(tool.handler(**coerced))
         except ToolError as exc:
@@ -638,22 +823,31 @@ class AnodizeMCP:
         except McpError:
             raise
         except Exception as exc:  # noqa: BLE001
-            detail = "internal error" if self.mask_error_details else f"{type(exc).__name__}: {exc}"
+            # FastMCP's exact masked and unmasked error texts.
+            detail = (
+                f"Error calling tool {name!r}"
+                if self.mask_error_details
+                else f"Error calling tool {name!r}: {exc}"
+            )
             return self._tool_error(detail)
 
-        if isinstance(value, ToolResult):
-            blocks = normalize_tool_result(value.content)[0] if value.content is not None else []
-            out: dict[str, Any] = {"content": blocks, "isError": False}
-            if value.structured_content is not None:
-                out["structuredContent"] = to_jsonable(value.structured_content)
-            if value.meta is not None:
-                out["_meta"] = value.meta
-            return out
+        try:
+            return self._tool_value_to_wire(tool, value)
+        except (TypeError, ValueError) as exc:
+            # An unserializable result (non-finite floats and the like) is a
+            # tool-level error, as FastMCP reports it.
+            return self._tool_error(f"Error calling tool {name!r}: {exc}")
 
-        content, _ = normalize_tool_result(value)
+    def _tool_value_to_wire(self, tool: ToolDef, value: Any) -> dict[str, Any]:
+        if isinstance(value, ToolResult):
+            return self._tool_result_to_wire(value)
+
+        content, auto_structured = normalize_tool_result(value)
         result: dict[str, Any] = {"content": content, "isError": False}
-        if tool.output_schema is not None and value is not None and not is_content_value(value):
-            payload = to_jsonable(value)
+        if tool.output_schema is not None and value is not None:
+            # An advertised outputSchema obliges a conforming structuredContent
+            # (MCP spec MUST); content-block values serialize their wire dicts.
+            payload = content if is_content_value(value) else to_jsonable(value)
             if tool.wrap_output:
                 result["structuredContent"] = {"result": payload}
                 # Mark the synthetic wrapper so the client unwraps .data back to
@@ -661,11 +855,28 @@ class AnodizeMCP:
                 result["_meta"] = {"fastmcp": {"wrap_result": True}}
             else:
                 result["structuredContent"] = payload
+        elif auto_structured is not None:
+            # An object-shaped value (dict, dataclass, model) is structured
+            # output even without a return annotation, as on FastMCP.
+            result["structuredContent"] = to_jsonable(auto_structured)
         return result
 
     @staticmethod
     def _tool_error(message: str) -> dict[str, Any]:
         return {"content": [{"type": "text", "text": message}], "isError": True}
+
+    def _tool_result_to_wire(self, value: ToolResult) -> dict[str, Any]:
+        content = value.content
+        if isinstance(content, list) and all(isinstance(b, dict) and "type" in b for b in content):
+            blocks: list[dict[str, Any]] = [dict(b) for b in content]
+        else:
+            blocks = normalize_tool_result(content)[0] if content is not None else []
+        out: dict[str, Any] = {"content": blocks, "isError": value.is_error}
+        if value.structured_content is not None:
+            out["structuredContent"] = to_jsonable(value.structured_content)
+        if value.meta is not None:
+            out["_meta"] = value.meta
+        return out
 
     def read_resource(
         self, uri: str, session: Session, request_id: Any = None
@@ -681,12 +892,20 @@ class AnodizeMCP:
             variables = template.match(uri)
             if variables is None:
                 continue
+            if template.param_specs is not None:
+                # Path variables arrive as strings; coerce to the annotated
+                # types, as FastMCP's pydantic validation does.
+                variables = coerce_arguments(template.param_specs, variables)
             value = self._invoke_resource(
                 template.handler, variables, template.context_param, session, request_id
             )
-            return normalize_resource_result(uri, value, template.mime_type)
+            # FastMCP serves JSON-shaped template reads as application/json
+            # (static resources default to text/plain).
+            return normalize_resource_result(
+                uri, value, template.mime_type, json_mime_default="application/json"
+            )
 
-        raise McpError(f"resource not found: {uri}", code=RESOURCE_NOT_FOUND)
+        raise NotFoundError(f"Unknown resource: {uri!r}")
 
     def _invoke_resource(
         self,
@@ -696,7 +915,7 @@ class AnodizeMCP:
         session: Session,
         request_id: Any,
     ) -> Any:
-        kwargs = dict(variables)
+        kwargs = variables.copy()
         if context_param:
             kwargs[context_param] = Context(session, self, request_id)
         try:
@@ -710,7 +929,7 @@ class AnodizeMCP:
         name = params.get("name")
         prompt = self._prompts.get(name) if isinstance(name, str) else None
         if prompt is None:
-            raise McpError(f"unknown prompt: {name!r}", code=INVALID_PARAMS)
+            raise NotFoundError(f"Unknown prompt: {name!r}")
 
         arguments = params.get("arguments") or {}
         coerced = coerce_arguments(prompt.param_specs, arguments)
@@ -908,6 +1127,32 @@ class AnodizeMCP:
             self._lifespan_state = manager
         return self._lifespan_state
 
+    def _acquire_lifespan(self) -> bool:
+        """Refcounted lifespan entry for in-memory connections.
+
+        Returns True when this caller owns a reference and must release it.
+        A lifespan already entered by a transport runner (stdio, ASGI) is
+        left alone.
+        """
+        if self.lifespan is None:
+            return False
+        with self._lifespan_lock:
+            if self._lifespan_refs == 0 and (
+                self._lifespan_cm is not None or self._lifespan_state is not None
+            ):
+                return False
+            self._lifespan_refs += 1
+            if self._lifespan_refs == 1:
+                self._enter_lifespan()
+            return True
+
+    def _release_lifespan(self) -> None:
+        with self._lifespan_lock:
+            if self._lifespan_refs > 0:
+                self._lifespan_refs -= 1
+                if self._lifespan_refs == 0:
+                    self._exit_lifespan()
+
     def _exit_lifespan(self) -> None:
         manager = self._lifespan_cm
         self._lifespan_cm = None
@@ -954,9 +1199,12 @@ def _find_context_param(func: Callable[..., Any]) -> Optional[str]:
 
 
 def _docstring(func: Callable[..., Any]) -> Optional[str]:
-    # The description is the summary only; an Args/Returns section is parsed
-    # separately into per-parameter descriptions, not repeated here.
-    return doc_summary(inspect.getdoc(func))
+    # FastMCP keeps the whole docstring unless parameter descriptions were
+    # actually extracted from it; only then is the summary used alone.
+    doc = inspect.getdoc(func)
+    if doc and parse_param_docs(doc):
+        return doc_summary(doc)
+    return doc
 
 
 def _return_annotation(func: Callable[..., Any]) -> Any:

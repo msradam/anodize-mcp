@@ -55,9 +55,25 @@ full (excluding timing/concurrency tests, which are not deterministic):
 | `tests/server/middleware/test_rate_limiting.py` | 22/22 |
 | `tests/server/middleware/test_timing.py` | 13/13 |
 
-Across the full core suite (tools, resources, prompts, server, client, all
-middleware; excluding the non-deterministic integration/retry tests) the figure
-is 408 of 527 (77%). The remaining 119 are dominated by:
+The broader core-suite figure is measured against a pinned file set so it can
+be reproduced exactly. The set is FastMCP's `tests/tools/tool`,
+`tests/resources`, `tests/prompts`, `tests/server/middleware`,
+`tests/server/test_server.py`, and `tests/client/client`, with
+`-k "not Integration and not Retry"` and a per-test timeout:
+
+```sh
+PYTHONPATH=src:conformance uv run --no-project --python 3.12 \
+  --with "fastmcp==3.4.2" --with pytest --with pytest-asyncio --with pytest-timeout \
+  --with opentelemetry-sdk --with opentelemetry-api --with dirty-equals --with inline-snapshot \
+  python -m pytest -p aliasplugin -W ignore -o asyncio_mode=auto \
+  -k "not Integration and not Retry" --timeout=30 \
+  /tmp/fastmcp-src/tests/tools/tool /tmp/fastmcp-src/tests/resources \
+  /tmp/fastmcp-src/tests/prompts /tmp/fastmcp-src/tests/server/middleware \
+  /tmp/fastmcp-src/tests/server/test_server.py /tmp/fastmcp-src/tests/client/client
+```
+
+The current figure on that set is 599 of 762 (79%); 59 further tests are
+deselected by the `-k` filter. The remaining failures are dominated by:
 
 - The two out-of-scope categories above (`isinstance(x, mcp.types.*)`, pydantic
   model coercion, FastMCP-internal helpers). Substituting `mcp.types.*` in the
@@ -69,3 +85,6 @@ is 408 of 527 (77%). The remaining 119 are dominated by:
   identity (`mcp.name` starts with `FastMCP-`).
 - The session-scoped `Context` state store, which would require aliasing
   FastMCP's `Context` and reimplementing its state model.
+- Client-side OAuth and the SSE transport (`tests/client/client/test_auth.py`),
+  which anodize does not implement; verify externally-issued tokens server-side
+  instead.

@@ -11,11 +11,13 @@ async style (``await ctx.info(...)``). See :mod:`anodize_mcp._deferred`.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import dataclasses
 from typing import TYPE_CHECKING, Any, Optional, Union
 
 from .._deferred import defer
+from ..attrdict import wrap as attr_wrap
 from ..clientfeatures import (
     CreateMessageResult,
     ElicitResult,
@@ -31,6 +33,18 @@ if TYPE_CHECKING:
     from .server import AnodizeMCP
 
 
+class _ReadResourceResult(list):
+    """FastMCP's ResourceResult shape over the plain contents list.
+
+    ``.contents`` mirrors FastMCP 3.x; indexing and iteration keep the older
+    list behavior.
+    """
+
+    @property
+    def contents(self) -> _ReadResourceResult:
+        return self
+
+
 @dataclasses.dataclass
 class RequestContext:
     """The per-request state FastMCP exposes via ``ctx.request_context``."""
@@ -38,6 +52,7 @@ class RequestContext:
     lifespan_context: Any = None
     request_id: Any = None
     session: Any = None
+    meta: Any = None
 
 
 class Context:
@@ -47,11 +62,13 @@ class Context:
         server: AnodizeMCP,
         request_id: Any = None,
         progress_token: Any = None,
+        meta: Optional[dict[str, Any]] = None,
     ):
         self._session = session
         self._server = server
         self._request_id = request_id
         self._progress_token = progress_token
+        self._meta = meta
 
     @property
     def session(self) -> Session:
@@ -102,6 +119,7 @@ class Context:
             lifespan_context=self._server._lifespan_state,
             request_id=self._request_id,
             session=self._session,
+            meta=attr_wrap(self._meta) if self._meta else None,
         )
 
     def client_supports_extension(self, name: str) -> bool:
@@ -122,10 +140,12 @@ class Context:
         logger_name: Optional[str] = None,
         logger: Optional[str] = None,
         data: Optional[Any] = None,
+        extra: Optional[dict[str, Any]] = None,
     ) -> Any:
         """Send a ``notifications/message`` log entry.
 
-        Argument order matches FastMCP: ``ctx.log(message, level=...)``.
+        Argument order matches FastMCP: ``ctx.log(message, level=...)``. The
+        wire payload is FastMCP's LogData shape, ``{"msg": ..., "extra": ...}``.
         """
         if self._session.should_log(level):
             payload: dict[str, Any] = {"level": level}
@@ -135,7 +155,8 @@ class Context:
             if data is not None:
                 payload["data"] = data
             else:
-                payload["data"] = message if isinstance(message, (dict, list)) else str(message)
+                msg = message if isinstance(message, (dict, list)) else str(message)
+                payload["data"] = {"msg": msg, "extra": extra}
             self._session.send_message(make_notification("notifications/message", payload))
         return defer(None)
 
@@ -174,7 +195,9 @@ class Context:
 
     # -- per-request/session state ----------------------------------------
 
-    def set_state(self, key: str, value: Any) -> Any:
+    def set_state(self, key: str, value: Any, *, serializable: bool = True) -> Any:
+        # serializable=False is FastMCP's marker for connection-like values;
+        # anodize stores any value either way, so the flag is accepted as-is.
         self._session.state[key] = value
         return defer(None)
 
@@ -188,21 +211,38 @@ class Context:
     # -- resource access --------------------------------------------------
 
     def read_resource(self, uri: str) -> Any:
-        """Read another resource registered on this server and return its contents."""
-        return defer(self._server.read_resource(uri, self._session))
+        """Read another resource registered on this server and return its contents.
+
+        The result is FastMCP-shaped: ``result.contents[i].content`` carries the
+        body (text or decoded bytes) and ``.mime_type`` the type. It is also a
+        list, so the older ``result[0]["text"]`` access keeps working.
+        """
+        raw = self._server.read_resource(uri, self._session)
+        items = []
+        for item in raw:
+            entry = item.copy()
+            if entry.get("text") is not None:
+                entry.setdefault("content", entry["text"])
+            elif entry.get("blob") is not None:
+                entry.setdefault("content", base64.b64decode(entry["blob"]))
+            entry.setdefault("mime_type", entry.get("mimeType"))
+            items.append(attr_wrap(entry))
+        return defer(_ReadResourceResult(items))
 
     def list_resources(self) -> Any:
         """List the server's registered (static) resources."""
-        return defer([r.describe() for r in self._server._resources.values()])
+        return defer(attr_wrap([r.describe() for r in self._server._resources.values()]))
 
     def list_prompts(self) -> Any:
         """List the server's registered prompts."""
-        return defer([p.describe() for p in self._server._prompts.values()])
+        return defer(attr_wrap([p.describe() for p in self._server._prompts.values()]))
 
     def get_prompt(self, name: str, arguments: Optional[dict[str, Any]] = None) -> Any:
         """Render one of the server's prompts."""
         params = {"name": name, "arguments": arguments or {}}
-        return defer(self._server._handle_prompt_get(params, self._session, self._request_id))
+        return defer(
+            attr_wrap(self._server._handle_prompt_get(params, self._session, self._request_id))
+        )
 
     # -- server-initiated requests to the client --------------------------
 
@@ -215,7 +255,7 @@ class Context:
         messages: Any,
         *,
         system_prompt: Optional[str] = None,
-        max_tokens: int = 1000,
+        max_tokens: int = 512,
         temperature: Optional[float] = None,
         stop_sequences: Optional[list[str]] = None,
         model_preferences: Optional[Any] = None,
@@ -268,10 +308,13 @@ class Context:
         is an instance of a dataclass schema, the unwrapped scalar, or the raw dict.
         """
         schema = response_type if schema is None else schema
-        if schema is None:
-            raise TypeError("elicit() requires a schema or response_type")
         self._require_client_capability("elicitation")
-        params = {"message": message, "requestedSchema": elicitation_schema(schema)}
+        # No schema means a bare confirmation: FastMCP sends an empty object
+        # schema and the accept carries empty data.
+        requested = (
+            {"type": "object", "properties": {}} if schema is None else elicitation_schema(schema)
+        )
+        params = {"message": message, "requestedSchema": requested}
         result = self._session.send_request("elicitation/create", params, timeout=timeout) or {}
         action = result.get("action", "cancel")
         content = result.get("content")
@@ -280,8 +323,15 @@ class Context:
             if dataclasses.is_dataclass(schema) and isinstance(schema, type):
                 with contextlib.suppress(TypeError):
                     data = schema(**content)
+            elif isinstance(schema, type) and hasattr(schema, "model_validate"):
+                # A pydantic response_type reconstructs the instance, as FastMCP does.
+                with contextlib.suppress(Exception):
+                    data = schema.model_validate(content)
             elif schema in (str, int, float, bool) and "value" in content:
                 data = content["value"]
+        elif action == "accept" and schema is None is data:
+            # FastMCP's schema-less confirmation accepts with empty data.
+            data = {}
         return defer(ElicitResult(action=action, data=data))
 
     def list_roots(self, *, timeout: float = 30.0) -> list[Root]:

@@ -16,11 +16,32 @@ class AttrDict(dict):
 
     def __getattr__(self, name: str) -> Any:
         if name in self:
-            return wrap(self[name])
+            return self._wrapped(name)
         # MCP carries metadata in the wire field "_meta"; expose it as ".meta".
         if name == "meta" and "_meta" in self:
-            return wrap(self["_meta"])
-        raise AttributeError(name)
+            return self._wrapped("_meta")
+        # Dunder lookups must fail normally (copy, pickle, inspect protocols).
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(name)
+        # FastMCP's typed objects expose unset optional fields as None
+        # (tool.outputSchema, result.meta); match that rather than raising.
+        return None
+
+    def _wrapped(self, key: str) -> Any:
+        # Wrap in place so repeated reads return the same objects and
+        # in-place mutations (result.contents[0].text = ...) survive into
+        # serialization.
+        value = self[key]
+        if isinstance(value, list):
+            for i, item in enumerate(value):
+                wrapped_item = wrap(item)
+                if wrapped_item is not item:
+                    value[i] = wrapped_item
+            return value
+        wrapped = wrap(value)
+        if wrapped is not value:
+            self[key] = wrapped
+        return wrapped
 
 
 def wrap(value: Any) -> Any:

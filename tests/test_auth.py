@@ -121,7 +121,7 @@ class HttpAuthTest(unittest.TestCase):
             f"http://127.0.0.1:{self.port}/mcp", data=json.dumps(body).encode(), method="POST"
         )
         req.add_header("Content-Type", "application/json")
-        req.add_header("Accept", "application/json, text/event-stream")
+        req.add_header("Accept", "application/json")
         if token:
             req.add_header("Authorization", f"Bearer {token}")
         try:
@@ -142,6 +142,25 @@ class HttpAuthTest(unittest.TestCase):
         status, _, body = self.post("good")
         self.assertEqual(status, 200)
         self.assertEqual(body["result"]["content"][0]["text"], "good")
+
+    def test_client_fails_fast_without_token(self):
+        import asyncio
+        import time
+
+        from anodize_mcp import Client, McpError
+
+        async def main():
+            start = time.monotonic()
+            with self.assertRaises(McpError) as caught:
+                async with Client(f"http://127.0.0.1:{self.port}/mcp"):
+                    pass
+            return time.monotonic() - start, str(caught.exception)
+
+        elapsed, message = asyncio.run(main())
+        # The 401 must resolve the request immediately, not starve it until
+        # the client timeout.
+        self.assertLess(elapsed, 5.0)
+        self.assertIn("401", message)
 
     def test_insufficient_scope_403(self):
         self.mcp.auth = StaticTokenVerifier(

@@ -53,7 +53,7 @@ uvx mypy
 PYTHONPATH=src uv run --no-project --with uvicorn --with httpx python -m unittest discover -s tests
 ```
 
-Today this is 153 unittest tests, ruff clean, mypy clean on 41 source files.
+Today this is 238 unittest tests, ruff clean, mypy clean on 41 source files.
 Spot-check the matrix ends, 3.9 and 3.14, since most regressions surface there:
 
 ```sh
@@ -86,9 +86,13 @@ Two figures to hold:
 - Green gate (CI-enforced, must never regress): the six FastMCP test files that
   pass in full, 169 tests. Listed in `.github/workflows/ci.yml` and
   `conformance/README.md`.
-- Broader core suite: about 408 of 527 (77%) across tools, resources, prompts,
-  server, client, and all middleware. Raising this number, without regressing the
-  green gate, is the main conformance objective.
+- Broader core suite: 599 of 762 (79%) on the pinned file set recorded in
+  `conformance/README.md` (tools/tool, resources, prompts, server/middleware,
+  test_server.py, client/client, with the documented filter and a 30s per-test
+  timeout). Raising this number, without regressing the green gate, is the main
+  conformance objective. Re-measure with the exact command in
+  `conformance/README.md`; earlier figures (408 of 527) predate the pinned set
+  and are not comparable.
 
 The remaining failures are dominated by tests that assert
 `isinstance(x, mcp.types.*)`. Substituting `mcp.types.*` in the harness is not

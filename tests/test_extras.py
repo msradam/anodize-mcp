@@ -6,7 +6,7 @@ import urllib.request
 import warnings
 from http.server import ThreadingHTTPServer
 
-from anodize_mcp import AnodizeMCP, Context, Middleware, Response
+from anodize_mcp import AnodizeMCP, Context, McpError, Middleware, Response
 from anodize_mcp.transports.http import _make_handler, _Manager
 from test_features import init_session, request
 
@@ -74,15 +74,106 @@ class MiddlewareTest(unittest.TestCase):
         seen.clear()  # drop the initialize message, which also flows through
         result = request(mcp, session, "tools/call", {"name": "echo", "arguments": {"text": "x"}})
         self.assertEqual(result["result"]["content"][0]["text"], "x")
+        # Per-middleware composition, as FastMCP orders it: every hook of the
+        # first middleware wraps every hook of the second.
         self.assertEqual(
             seen,
             [
                 ("a", "msg", "tools/call"),
-                ("b", "msg", "tools/call"),
                 ("a", "tool", "tools/call"),
+                ("b", "msg", "tools/call"),
                 ("b", "tool", "tools/call"),
             ],
         )
+
+    def test_fastmcp_middleware_shapes(self):
+        observed = {}
+
+        class Shapes(Middleware):
+            async def on_call_tool(self, ctx, call_next):
+                observed["name"] = ctx.message.name
+                observed["has_timestamp"] = ctx.timestamp is not None
+                result = await call_next(ctx.copy())
+                observed["result_text"] = result.content[0].text
+                return result
+
+            async def on_list_tools(self, ctx, call_next):
+                tools = await call_next(ctx)
+                return [t for t in tools if t.name != "hidden"]
+
+        mcp = AnodizeMCP("shape")
+        mcp.add_middleware(Shapes())
+
+        @mcp.tool
+        def echo(text: str) -> str:
+            return text
+
+        @mcp.tool
+        def hidden() -> str:
+            return "h"
+
+        session, _ = init_session(mcp)
+        listing = request(mcp, session, "tools/list", {})
+        self.assertEqual([t["name"] for t in listing["result"]["tools"]], ["echo"])
+        result = request(mcp, session, "tools/call", {"name": "echo", "arguments": {"text": "x"}})
+        self.assertEqual(result["result"]["content"][0]["text"], "x")
+        self.assertEqual(observed["name"], "echo")
+        self.assertTrue(observed["has_timestamp"])
+        self.assertEqual(observed["result_text"], "x")
+
+    def test_middleware_copy_rewrites_request(self):
+        class Rewrite(Middleware):
+            async def on_call_tool(self, ctx, call_next):
+                message = dict(ctx.message)
+                message["arguments"] = {"text": "REWRITTEN"}
+                return await call_next(ctx.copy(message=message))
+
+        mcp = AnodizeMCP("rw")
+        mcp.add_middleware(Rewrite())
+
+        @mcp.tool
+        def echo(text: str) -> str:
+            return text
+
+        session, _ = init_session(mcp)
+        result = request(mcp, session, "tools/call", {"name": "echo", "arguments": {"text": "x"}})
+        self.assertEqual(result["result"]["content"][0]["text"], "REWRITTEN")
+
+    def test_middleware_error_becomes_tool_error_result(self):
+        class Deny(Middleware):
+            async def on_call_tool(self, ctx, call_next):
+                raise McpError("middleware denied", code=-32099)
+
+        mcp = AnodizeMCP("deny")
+        mcp.add_middleware(Deny())
+
+        @mcp.tool
+        def echo(text: str) -> str:
+            return text
+
+        session, _ = init_session(mcp)
+        result = request(mcp, session, "tools/call", {"name": "echo", "arguments": {"text": "x"}})
+        self.assertTrue(result["result"]["isError"])
+        self.assertEqual(result["result"]["content"][0]["text"], "middleware denied")
+
+    def test_middleware_in_place_contents_mutation_propagates(self):
+        class Upper(Middleware):
+            async def on_read_resource(self, ctx, call_next):
+                result = await call_next(ctx)
+                for item in result.contents:
+                    item["text"] = item["text"].upper()
+                return result
+
+        mcp = AnodizeMCP("up")
+        mcp.add_middleware(Upper())
+
+        @mcp.resource("data://x")
+        def x() -> str:
+            return "abc"
+
+        session, _ = init_session(mcp)
+        resp = request(mcp, session, "resources/read", {"uri": "data://x"})
+        self.assertEqual(resp["result"]["contents"][0]["text"], "ABC")
 
     def test_middleware_can_short_circuit(self):
         class Block(Middleware):
@@ -140,7 +231,7 @@ class IntrospectionTest(unittest.TestCase):
         mcp.disable_tool("add")
         self.assertEqual(request(mcp, session, "tools/list", {})["result"]["tools"], [])
         resp = request(mcp, session, "tools/call", {"name": "add", "arguments": {"a": 1, "b": 1}})
-        self.assertEqual(resp["error"]["code"], -32601)
+        self.assertTrue(resp["result"]["isError"])
         mcp.enable_tool("add")
         self.assertEqual(len(request(mcp, session, "tools/list", {})["result"]["tools"]), 1)
 
@@ -173,7 +264,7 @@ class ConstructorFlagTest(unittest.TestCase):
 
         session, _ = init_session(mcp)
         result = request(mcp, session, "tools/call", {"name": "crash", "arguments": {}})
-        self.assertEqual(result["result"]["content"][0]["text"], "internal error")
+        self.assertEqual(result["result"]["content"][0]["text"], "Error calling tool 'crash'")
 
     def test_metadata_in_server_info(self):
         mcp = AnodizeMCP("m", icons=[{"src": "a.png"}], website_url="https://example.com")

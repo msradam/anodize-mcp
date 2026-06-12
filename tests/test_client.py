@@ -3,7 +3,8 @@ import sys
 import unittest
 from dataclasses import dataclass
 
-from anodize_mcp import AnodizeMCP, Client, ClientError, Context
+from anodize_mcp import AnodizeMCP, Client, ClientError, Context, McpError, Middleware
+from anodize_mcp.exceptions import INVALID_PARAMS, ErrorData
 
 
 def build_server(page_size: int = 100) -> AnodizeMCP:
@@ -92,6 +93,23 @@ class InMemoryClientTest(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ClientError):
                 await c.call_tool("add", {"a": "x", "b": 1})
 
+    async def test_failed_initialize_raises_and_closes(self):
+        class RejectInitialize(Middleware):
+            async def on_initialize(self, context, call_next):
+                raise McpError(ErrorData(code=INVALID_PARAMS, message="bad init"))
+
+        server = build_server()
+        server.add_middleware(RejectInitialize())
+        client = Client(server)
+        with self.assertRaises(McpError) as caught:
+            async with client:
+                pass
+        self.assertEqual(caught.exception.error.code, INVALID_PARAMS)
+        self.assertEqual(caught.exception.error.message, "bad init")
+        # The failed entry must release the transport and reader; a leak here
+        # deadlocks event-loop shutdown on the executor join.
+        self.assertFalse(client.is_connected())
+
     async def test_resources_and_prompts(self):
         async with Client(build_server()) as c:
             self.assertEqual([r["uri"] for r in await c.list_resources()], ["config://app"])
@@ -135,6 +153,217 @@ class InMemoryClientTest(unittest.IsolatedAsyncioTestCase):
             r = await c.call_tool("where", {})
             self.assertEqual(r.text, "file:///a,file:///b")
 
+    async def test_fastmcp_handler_conventions(self):
+        mcp = AnodizeMCP("conv")
+
+        @mcp.tool
+        async def prog(ctx: Context) -> str:
+            await ctx.report_progress(1, 10, "step")
+            return "done"
+
+        @mcp.tool
+        async def logd(ctx: Context) -> str:
+            await ctx.info("hello")
+            return "ok"
+
+        @mcp.tool
+        async def sam(ctx: Context) -> str:
+            r = await ctx.sample("hi", system_prompt="SYS")
+            return r.text or ""
+
+        progress_events = []
+
+        async def on_progress(progress, total, message):
+            progress_events.append((progress, total, message))
+
+        logs = []
+
+        def on_log(m):
+            logs.append((m.level, m.data.msg))
+
+        def sampling(messages, params, context):
+            return f"sys={params.systemPrompt}"
+
+        async with Client(mcp, log_handler=on_log, sampling_handler=sampling) as c:
+            r = await c.call_tool("prog", {}, progress_handler=on_progress)
+            self.assertEqual(r.text, "done")
+            self.assertEqual(progress_events, [(1, 10, "step")])
+            self.assertEqual((await c.call_tool("sam", {})).text, "sys=SYS")
+            await c.call_tool("logd", {})
+            self.assertIn(("info", "hello"), logs)
+
+    async def test_elicitation_handler_return_conventions(self):
+        @dataclass
+        class Prefs:
+            cuisine: str
+
+        mcp = AnodizeMCP("elic")
+
+        @mcp.tool
+        async def ask(ctx: Context) -> str:
+            r = await ctx.elicit("?", Prefs)
+            return f"{r.action}:{getattr(r.data, 'cuisine', r.data)}"
+
+        async def dict_handler(message, response_type, params, context):
+            return {"cuisine": "thai"}
+
+        async def dataclass_handler(message, response_type, params, context):
+            return Prefs(cuisine="thai")
+
+        for handler in (dict_handler, dataclass_handler):
+            async with Client(mcp, elicitation_handler=handler) as c:
+                r = await c.call_tool("ask", {})
+                self.assertEqual(r.text, "accept:thai")
+
+    async def test_ctx_introspection_has_attribute_access(self):
+        mcp = build_server()
+
+        @mcp.tool
+        async def introspect(ctx: Context) -> str:
+            resources = await ctx.list_resources()
+            prompts = await ctx.list_prompts()
+            rendered = await ctx.get_prompt("greet", {"language": "fr"})
+            return f"{resources[0].uri}|{prompts[0].name}|{rendered.messages[0].role}"
+
+        async with Client(mcp) as c:
+            r = await c.call_tool("introspect", {})
+            self.assertEqual(r.text, "config://app|greet|user")
+
+    async def test_string_roots(self):
+        async with Client(build_server(), roots=["file:///w"]) as c:
+            r = await c.call_tool("where", {})
+            self.assertEqual(r.text, "file:///w")
+
+    async def test_sampling_params_optional_fields_default_none(self):
+        seen = {}
+
+        def handler(messages, params, context):
+            seen["prefs"] = params.modelPreferences
+            return "ok"
+
+        async with Client(build_server(), sampling_handler=handler) as c:
+            await c.call_tool("review", {"code": "x"})
+        self.assertIsNone(seen["prefs"])
+
+    async def test_ctx_read_resource_is_fastmcp_shaped(self):
+        mcp = AnodizeMCP("rr")
+
+        @mcp.resource("data://greet")
+        def greet() -> str:
+            return "hello-resource"
+
+        @mcp.tool
+        async def reader(ctx: Context) -> str:
+            res = await ctx.read_resource("data://greet")
+            assert res[0]["text"] == "hello-resource"  # older list access
+            return f"{res.contents[0].content}|{res.contents[0].mime_type}"
+
+        async with Client(mcp) as c:
+            r = await c.call_tool("reader", {})
+            self.assertEqual(r.text, "hello-resource|text/plain")
+
+    async def test_lifespan_runs_for_in_memory_client(self):
+        import contextlib as _ctxlib
+
+        events = []
+
+        @_ctxlib.contextmanager
+        def lifespan(server):
+            events.append("enter")
+            yield {"db": "conn42"}
+            events.append("exit")
+
+        mcp = AnodizeMCP("ls", lifespan=lifespan)
+
+        @mcp.tool
+        def show(ctx: Context) -> str:
+            return str(ctx.request_context.lifespan_context)
+
+        async with Client(mcp) as c:
+            r = await c.call_tool("show", {})
+            self.assertEqual(r.text, "{'db': 'conn42'}")
+        self.assertEqual(events, ["enter", "exit"])
+
+    async def test_message_handler_sees_notifications(self):
+        mcp = build_server()
+        seen = []
+
+        async with Client(mcp, message_handler=lambda m: seen.append(m.method)) as c:
+            await c.ping()
+            mcp.remove_tool("boom")
+            await c.ping()
+        self.assertIn("notifications/tools/list_changed", seen)
+
+    async def test_wildcard_template(self):
+        mcp = AnodizeMCP("w")
+
+        @mcp.resource("files://{path*}")
+        def read_path(path: str) -> str:
+            return f"got:{path}"
+
+        async with Client(mcp) as c:
+            contents = await c.read_resource("files://a/b/c.txt")
+            self.assertEqual(contents[0]["text"], "got:a/b/c.txt")
+
+    async def test_bytes_return_has_no_structured_content(self):
+        mcp = AnodizeMCP("b")
+
+        @mcp.tool
+        def raw() -> bytes:
+            return b"\x00\x01"
+
+        async with Client(mcp) as c:
+            r = await c.call_tool("raw", {})
+            self.assertIsNone(r.structured_content)
+
+    async def test_elicit_result_accepts_content_keyword(self):
+        from anodize_mcp import ElicitResult
+
+        result = ElicitResult(action="accept", content={"a": 1})
+        self.assertEqual(result.data, {"a": 1})
+        self.assertEqual(ElicitResult(action="accept", data={"b": 2}).content, {"b": 2})
+
+    async def test_star_args_progress_handler_gets_fastmcp_signature(self):
+        mcp = AnodizeMCP("star")
+
+        @mcp.tool
+        async def prog(ctx: Context) -> str:
+            await ctx.report_progress(1, 2, "half")
+            return "done"
+
+        events = []
+        async with Client(mcp, progress_handler=lambda *a: events.append(a)) as c:
+            await c.call_tool("prog", {})
+        self.assertEqual(events, [(1, 2, "half")])
+
+    async def test_request_after_close_raises(self):
+        client = Client(build_server())
+        async with client as c:
+            await c.ping()
+        with self.assertRaises(RuntimeError):
+            await client.call_tool("add", {"a": 1, "b": 2})
+
+    async def test_bad_notification_handler_does_not_kill_session(self):
+        mcp = AnodizeMCP("robust")
+
+        @mcp.tool
+        async def prog(ctx: Context) -> str:
+            await ctx.report_progress(1, 2)
+            return "done"
+
+        @mcp.tool
+        def add(a: int, b: int) -> int:
+            return a + b
+
+        def bad_handler(progress, total, message):
+            raise ValueError("boom")
+
+        async with Client(mcp, progress_handler=bad_handler) as c:
+            await c.call_tool("prog", {})
+            r = await c.call_tool("add", {"a": 1, "b": 2})
+            self.assertEqual(r.data, 3)
+            self.assertTrue(c.is_connected())
+
     async def test_pagination_is_transparent(self):
         mcp = build_server(page_size=2)
         for i in range(5):
@@ -147,7 +376,7 @@ class InMemoryClientTest(unittest.IsolatedAsyncioTestCase):
 class StdioClientTest(unittest.IsolatedAsyncioTestCase):
     async def test_subprocess_server(self):
         repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        env = dict(os.environ)
+        env = os.environ.copy()
         env["PYTHONPATH"] = os.path.join(repo, "src")
         command = [sys.executable, os.path.join(repo, "examples", "quickstart.py")]
         async with Client(command, env=env) as c:  # type: ignore[arg-type]

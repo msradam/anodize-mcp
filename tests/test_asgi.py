@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import socket
 import threading
 import time
@@ -58,6 +59,16 @@ def build_server() -> AnodizeMCP:
     return mcp
 
 
+def rpc(response):
+    """Parse a JSON-RPC POST reply, JSON or SSE-framed."""
+    if "text/event-stream" in response.headers.get("content-type", ""):
+        events = [
+            json.loads(line[5:]) for line in response.text.splitlines() if line.startswith("data:")
+        ]
+        return events[-1] if events else None
+    return response.json()
+
+
 @unittest.skipUnless(_HAS_UVICORN and _HAS_HTTPX, "uvicorn and httpx required")
 class AsgiUvicornTest(unittest.TestCase):
     def _serve(self, mcp, stateless=True):
@@ -108,7 +119,7 @@ class AsgiUvicornTest(unittest.TestCase):
                 },
             )
             self.assertEqual(init.status_code, 200)
-            self.assertEqual(init.json()["result"]["serverInfo"]["name"], "asgi-demo")
+            self.assertEqual(rpc(init)["result"]["serverInfo"]["name"], "asgi-demo")
 
             call = c.post(
                 base + "/mcp",
@@ -119,7 +130,7 @@ class AsgiUvicornTest(unittest.TestCase):
                     "params": {"name": "add", "arguments": {"a": 2, "b": 3}},
                 },
             )
-            self.assertEqual(call.json()["result"]["structuredContent"], {"result": 5})
+            self.assertEqual(rpc(call)["result"]["structuredContent"], {"result": 5})
 
             weather = c.post(
                 base + "/mcp",
@@ -130,7 +141,7 @@ class AsgiUvicornTest(unittest.TestCase):
                     "params": {"name": "weather", "arguments": {}},
                 },
             )
-            self.assertEqual(weather.json()["result"]["structuredContent"], {"temp": 21.5})
+            self.assertEqual(rpc(weather)["result"]["structuredContent"], {"temp": 21.5})
 
     def test_custom_routes(self):
         base, _ = self._serve(build_server())
@@ -232,7 +243,30 @@ class AsgiUvicornTest(unittest.TestCase):
             )
             sid = init.headers["Mcp-Session-Id"]
 
-        events = []
+        call_body = {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "progressive",
+                "arguments": {},
+                "_meta": {"progressToken": "p1"},
+            },
+        }
+
+        # An SSE-accepting POST streams progress ahead of the result on its
+        # own response, as FastMCP does.
+        with self._client() as c:
+            call = c.post(base + "/mcp", headers={"Mcp-Session-Id": sid}, json=call_body)
+        self.assertIn("text/event-stream", call.headers["content-type"])
+        events = [
+            json.loads(line[5:]) for line in call.text.splitlines() if line.startswith("data:")
+        ]
+        self.assertEqual(events[0].get("method"), "notifications/progress")
+        self.assertEqual(events[-1].get("id"), 2)
+
+        # A JSON-only POST routes progress to the standalone GET stream.
+        get_events = []
 
         def read_sse():
             with (
@@ -246,29 +280,18 @@ class AsgiUvicornTest(unittest.TestCase):
             ):
                 for line in resp.iter_lines():
                     if line.startswith("data:"):
-                        events.append(line)
+                        get_events.append(line)
                         return
 
         reader = threading.Thread(target=read_sse, daemon=True)
         reader.start()
         time.sleep(0.3)  # let the stream attach
-        with self._client() as c:
-            c.post(
-                base + "/mcp",
-                headers={"Mcp-Session-Id": sid},
-                json={
-                    "jsonrpc": "2.0",
-                    "id": 2,
-                    "method": "tools/call",
-                    "params": {
-                        "name": "progressive",
-                        "arguments": {},
-                        "_meta": {"progressToken": "p1"},
-                    },
-                },
-            )
+        with httpx.Client(headers={"Accept": "application/json"}) as c:
+            c.post(base + "/mcp", headers={"Mcp-Session-Id": sid}, json=call_body | {"id": 3})
         reader.join(timeout=4)
-        self.assertTrue(any("progress" in e for e in events), f"no progress event in {events}")
+        self.assertTrue(
+            any("progress" in e for e in get_events), f"no progress event in {get_events}"
+        )
 
 
 if __name__ == "__main__":

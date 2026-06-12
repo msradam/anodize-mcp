@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
-from .tool import ToolDef
+from .tool import ToolDef, ToolResult
 
-__all__ = ["ToolDef"]
+# FastMCP's component class is named Tool; ToolDef is the anodize equivalent.
+Tool = ToolDef
+
+__all__ = ["Tool", "ToolDef", "ToolResult"]

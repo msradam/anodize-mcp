@@ -19,8 +19,8 @@ class PromptArgument:
         out: dict[str, Any] = {"name": self.name}
         if self.description is not None:
             out["description"] = self.description
-        if self.required:
-            out["required"] = True
+        # Always present, as FastMCP lists it, so arg.required reads on both.
+        out["required"] = self.required
         return out
 
 
@@ -58,7 +58,14 @@ class PromptMessage:
 
     def to_dict(self) -> dict[str, Any]:
         if self.content is not None:
-            return {"role": self.role, "content": self.content}
+            content = self.content
+            # A content block must serialize to its wire shape, not raw fields.
+            maker = getattr(content, "to_dict", None)
+            if callable(maker):
+                content = maker()
+            elif isinstance(content, list):
+                content = [c.to_dict() if hasattr(c, "to_dict") else c for c in content]
+            return {"role": self.role, "content": content}
         return {"role": self.role, "content": {"type": "text", "text": self.text}}
 
 

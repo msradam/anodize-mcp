@@ -246,9 +246,10 @@ class TestConstraintInterop(unittest.TestCase):
 
 class TestBareContainers(unittest.TestCase):
     def test_bare_containers_keep_type(self):
-        self.assertEqual(type_to_schema(list), {"type": "array"})
-        self.assertEqual(type_to_schema(dict), {"type": "object"})
-        self.assertEqual(type_to_schema(set), {"type": "array", "uniqueItems": True})
+        # Vacuous items/additionalProperties keywords stay, as FastMCP emits them.
+        self.assertEqual(type_to_schema(list), {"type": "array", "items": {}})
+        self.assertEqual(type_to_schema(dict), {"type": "object", "additionalProperties": True})
+        self.assertEqual(type_to_schema(set), {"type": "array", "items": {}, "uniqueItems": True})
 
 
 class TestDocstringDescriptions(unittest.TestCase):

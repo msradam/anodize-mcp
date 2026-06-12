@@ -10,13 +10,17 @@ from __future__ import annotations
 import contextlib
 import json
 import subprocess
+import sys
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
+from pathlib import Path
 from queue import Queue
 from typing import Any, Iterator, Optional
 
-from ..transports.memory import SHUTDOWN, serve_memory
+from ..protocol import json_default, make_error
+from ..transports.memory import SHUTDOWN, _jsonsafe, serve_memory
 
 # ---------------------------------------------------------------------------
 # Transports
@@ -36,12 +40,17 @@ class FastMCPTransport:
         self._inbox: Queue[Any] = Queue()
 
     def start(self, outbox: Queue[Any]) -> None:
+        # A fresh inbox per connection: a second close() after shutdown would
+        # otherwise leave a stale SHUTDOWN for the next connection to read.
+        self._inbox = Queue()
         threading.Thread(
             target=serve_memory, args=(self._server, self._inbox, outbox), daemon=True
         ).start()
 
     def send(self, message: dict[str, Any]) -> None:
-        self._inbox.put(message)
+        # Round-trip through JSON so the in-memory path carries exactly what a
+        # wire transport would, in both directions.
+        self._inbox.put(_jsonsafe(message))
 
     def close(self) -> None:
         self._inbox.put(SHUTDOWN)
@@ -73,7 +82,7 @@ class _StdioTransport:
 
     def send(self, message: dict[str, Any]) -> None:
         assert self._proc is not None and self._proc.stdin is not None
-        self._proc.stdin.write(json.dumps(message).encode("utf-8") + b"\n")
+        self._proc.stdin.write(json.dumps(message, default=json_default).encode("utf-8") + b"\n")
         self._proc.stdin.flush()
 
     def close(self) -> None:
@@ -121,12 +130,16 @@ class StreamableHttpTransport:
 
     def start(self, outbox: Queue[Any]) -> None:
         self._outbox = outbox
+        # Allow restart after close (Client re-entered).
+        self._closed = False
+        self._sse_started = False
+        self._session_id = None
 
     def send(self, message: dict[str, Any]) -> None:
         threading.Thread(target=self._post, args=(message,), daemon=True).start()
 
     def _request_headers(self, accept: str) -> dict[str, str]:
-        headers = {"Accept": accept, **self._headers}
+        headers = {"Accept": accept} | self._headers
         if self._session_id:
             headers["Mcp-Session-Id"] = self._session_id
         return headers
@@ -136,29 +149,61 @@ class StreamableHttpTransport:
             return
         headers = self._request_headers("application/json, text/event-stream")
         headers["Content-Type"] = "application/json"
-        req = urllib.request.Request(
-            self._url, data=json.dumps(message).encode("utf-8"), headers=headers, method="POST"
-        )
-        try:
-            # A read timeout keeps a misbehaving server from hanging the client.
-            resp: Any = urllib.request.urlopen(req, timeout=self._timeout)  # noqa: S310
-        except urllib.error.HTTPError as exc:
-            resp = exc  # 4xx/5xx still carry a JSON-RPC error body
-        except OSError:
+        data = json.dumps(message, default=json_default).encode("utf-8")
+
+        # Any failure must resolve the pending request, or the caller waits out
+        # its full timeout for an answer that can never arrive.
+        request_id = message.get("id") if isinstance(message, dict) else None
+
+        def fail(text: str) -> None:
+            if request_id is not None and self._outbox is not None:
+                self._outbox.put(make_error(request_id, -32000, text))
+
+        resp: Any = None
+        for _ in range(3):  # follow a couple of redirects (e.g. /mcp/ to /mcp)
+            req = urllib.request.Request(self._url, data=data, headers=headers, method="POST")
+            try:
+                # A read timeout keeps a misbehaving server from hanging the client.
+                resp = urllib.request.urlopen(req, timeout=self._timeout)  # noqa: S310
+            except urllib.error.HTTPError as exc:
+                # urllib refuses to auto-redirect a POST; do it ourselves and
+                # remember the resolved URL for subsequent requests.
+                location = exc.headers.get("Location") if exc.headers else None
+                if exc.code in (301, 302, 307, 308) and location:
+                    self._url = urllib.parse.urljoin(self._url, location)
+                    continue
+                resp = exc  # a 4xx/5xx may still carry a JSON-RPC error body
+            except OSError as exc:
+                fail(f"connection failed: {exc}")
+                return
+            break
+        if resp is None:
+            fail("too many redirects")
             return
-        with contextlib.suppress(Exception), resp:
-            sid = resp.headers.get("Mcp-Session-Id")
-            if sid:
-                self._session_id = sid
-                self._ensure_sse_stream()
-            if "text/event-stream" in (resp.headers.get("Content-Type") or ""):
-                for msg in _iter_sse(resp):
-                    self._outbox.put(msg)
-            else:
+        with resp:
+            try:
+                status = int(getattr(resp, "status", None) or getattr(resp, "code", 200) or 200)
+                sid = resp.headers.get("Mcp-Session-Id")
+                if sid:
+                    self._session_id = sid
+                    self._ensure_sse_stream()
+                if "text/event-stream" in (resp.headers.get("Content-Type") or ""):
+                    for msg in _iter_sse(resp):
+                        self._outbox.put(msg)
+                    return
                 body = resp.read()
+                parsed: Any = None
                 if body.strip():
                     with contextlib.suppress(ValueError):
-                        self._outbox.put(json.loads(body))
+                        parsed = json.loads(body)
+                if isinstance(parsed, dict) and parsed.get("jsonrpc") == "2.0":
+                    self._outbox.put(parsed)
+                elif status >= 400:
+                    # Not a JSON-RPC reply (e.g. an auth layer's 401); fail fast.
+                    detail = parsed.get("error") if isinstance(parsed, dict) else None
+                    fail(f"HTTP {status}: {detail or 'request failed'}")
+            except Exception as exc:  # noqa: BLE001
+                fail(f"transport error: {exc}")
 
     def _ensure_sse_stream(self) -> None:
         if self._sse_started:
@@ -191,6 +236,11 @@ def _make_transport(target: Any, env: Optional[dict[str, str]]) -> Any:
         return StreamableHttpTransport(target)
     if hasattr(target, "handle_message") and hasattr(target, "new_session"):
         return FastMCPTransport(target)
+    # A .py/.js script path launches a stdio subprocess, as FastMCP infers.
+    if isinstance(target, (str, Path)) and str(target).endswith((".py", ".js")):
+        path = str(target)
+        runner = [sys.executable] if path.endswith(".py") else ["node"]
+        return _StdioTransport([*runner, path], env=env)
     if isinstance(target, (list, tuple)):
         return _StdioTransport([str(x) for x in target], env=env)
     if hasattr(target, "start") and hasattr(target, "send") and hasattr(target, "close"):

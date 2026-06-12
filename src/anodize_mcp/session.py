@@ -13,6 +13,7 @@ A session holds two things the dispatcher cares about:
 from __future__ import annotations
 
 import threading
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
@@ -49,8 +50,12 @@ class Session:
         self.client_info: dict[str, Any] = {}
         self.client_capabilities: dict[str, Any] = {}
         self.protocol_version = ""
-        self.log_level = "info"
-        self.session_id: Optional[str] = None
+        # None means no filtering: every log notification is forwarded until
+        # the client narrows it via logging/setLevel, matching FastMCP.
+        self.log_level: Optional[str] = None
+        # Every session gets an id (FastMCP always returns a string from
+        # ctx.session_id); the HTTP transport overwrites it with the wire id.
+        self.session_id: Optional[str] = str(uuid.uuid4())
         self.subscriptions: set[str] = set()
         self.state: dict[str, Any] = {}
         self.transport: Optional[str] = None
@@ -58,11 +63,28 @@ class Session:
         self._pending: dict[str, _Pending] = {}
         self._pending_lock = threading.Lock()
         self._id_counter = 0
+        self._thread_sink = threading.local()
         self._id_lock = threading.Lock()
 
     # -- outbound messages ------------------------------------------------
 
+    def push_thread_sink(self, sink: Callable[[dict[str, Any]], None]) -> None:
+        """Divert this thread's outbound messages to ``sink``.
+
+        The HTTP POST handler uses this so notifications produced while a
+        request is being handled travel on that request's own SSE response,
+        as FastMCP streams them, rather than racing it on the GET stream.
+        """
+        self._thread_sink.sink = sink
+
+    def pop_thread_sink(self) -> None:
+        self._thread_sink.sink = None
+
     def send_message(self, message: dict[str, Any]) -> None:
+        sink = getattr(self._thread_sink, "sink", None)
+        if sink is not None:
+            sink(message)
+            return
         if self._send is not None:
             self._send(message)
 
@@ -134,4 +156,6 @@ class Session:
     # -- helpers ----------------------------------------------------------
 
     def should_log(self, level: str) -> bool:
+        if self.log_level is None:
+            return True
         return LOG_LEVELS.get(level, 1) >= LOG_LEVELS.get(self.log_level, 1)

@@ -18,6 +18,7 @@ No third-party web framework is involved: this uses ``http.server`` and
 
 from __future__ import annotations
 
+import contextlib
 import json
 import queue
 import secrets
@@ -153,6 +154,16 @@ def _make_handler(manager: _Manager) -> type[BaseHTTPRequestHandler]:
         def _path_ok(self) -> bool:
             return urlsplit(self.path).path == manager.endpoint
 
+        def _redirect_slash(self) -> bool:
+            """307-redirect /mcp/ to /mcp, as FastMCP's Starlette app does."""
+            if urlsplit(self.path).path != manager.endpoint + "/":
+                return False
+            self.send_response(HTTPStatus.TEMPORARY_REDIRECT)
+            self.send_header("Location", manager.endpoint)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return True
+
         def _authenticate(self) -> tuple[bool, Any]:
             """Return ``(ok, access_token)``; send 401/403 and return False if not."""
             outcome, value = authorize_request(
@@ -195,7 +206,7 @@ def _make_handler(manager: _Manager) -> type[BaseHTTPRequestHandler]:
                 status, data, headers = coerce_response(result).render()
             except Exception as exc:  # noqa: BLE001
                 status, data, headers = (
-                    int(HTTPStatus.INTERNAL_SERVER_ERROR),
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
                     json.dumps({"error": str(exc)}).encode("utf-8"),
                     {"Content-Type": "application/json"},
                 )
@@ -227,7 +238,7 @@ def _make_handler(manager: _Manager) -> type[BaseHTTPRequestHandler]:
 
         def do_POST(self) -> None:  # noqa: N802
             if not self._path_ok():
-                if self._custom_route():
+                if self._redirect_slash() or self._custom_route():
                     return
                 self._send_status(HTTPStatus.NOT_FOUND)
                 return
@@ -275,6 +286,14 @@ def _make_handler(manager: _Manager) -> type[BaseHTTPRequestHandler]:
                     return
                 http_session = existing
 
+            extra = {"Mcp-Session-Id": http_session.id} if is_initialize else None
+
+            # A request answered while the client accepts SSE streams its
+            # notifications in order ahead of the result, as FastMCP does.
+            if is_request(message) and "text/event-stream" in self.headers.get("Accept", ""):
+                self._post_streaming(message, http_session, access, extra)
+                return
+
             # No coarse per-session lock here: a handler may block waiting for a
             # client reply that arrives on a *different* POST, which must be free
             # to run concurrently and resolve the waiter. The access token is set
@@ -292,15 +311,48 @@ def _make_handler(manager: _Manager) -> type[BaseHTTPRequestHandler]:
                 self._send_status(HTTPStatus.ACCEPTED)
                 return
 
-            extra = {"Mcp-Session-Id": http_session.id} if is_initialize else None
             if response is None:
                 self._send_status(HTTPStatus.ACCEPTED)
             else:
                 self._send_json(HTTPStatus.OK, response, extra_headers=extra)
 
+        def _post_streaming(
+            self,
+            message: dict[str, Any],
+            http_session: _HttpSession,
+            access: Any,
+            extra: Optional[dict[str, str]],
+        ) -> None:
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "close")
+            for key, value in (extra or {}).items():
+                self.send_header(key, value)
+            self.end_headers()
+            self.close_connection = True
+
+            def write_event(item: dict[str, Any]) -> None:
+                payload = json.dumps(item, ensure_ascii=False, default=json_default)
+                with contextlib.suppress(OSError):
+                    self.wfile.write(f"data: {payload}\n\n".encode())
+                    self.wfile.flush()
+
+            # The handler runs on this thread, so notifications it produces
+            # stream inline, strictly before the final response event.
+            token_ctx = _CURRENT_TOKEN.set(access)
+            http_session.core.push_thread_sink(write_event)
+            try:
+                response = manager.server.handle_message(message, http_session.core)
+            finally:
+                http_session.core.pop_thread_sink()
+                _CURRENT_TOKEN.reset(token_ctx)
+            if response is not None:
+                write_event(response)
+
         def do_GET(self) -> None:  # noqa: N802
             if not self._path_ok():
-                if self._custom_route():
+                if self._redirect_slash() or self._custom_route():
                     return
                 self._send_status(HTTPStatus.NOT_FOUND)
                 return
@@ -324,7 +376,7 @@ def _make_handler(manager: _Manager) -> type[BaseHTTPRequestHandler]:
 
         def do_DELETE(self) -> None:  # noqa: N802
             if not self._path_ok():
-                if self._custom_route():
+                if self._redirect_slash() or self._custom_route():
                     return
                 self._send_status(HTTPStatus.NOT_FOUND)
                 return

@@ -13,7 +13,8 @@ and friends) run nested inside it for the matching method.
 from __future__ import annotations
 
 from collections.abc import Awaitable
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from typing import Any, Generic, Optional, TypeVar
 
 T = TypeVar("T")
@@ -36,7 +37,9 @@ class MiddlewareContext(Generic[T]):
     """What a middleware hook receives about the message in flight.
 
     Generic over the message type, matching FastMCP so ``MiddlewareContext[T]``
-    annotations resolve.
+    annotations resolve. FastMCP's context is frozen and keyword-only; this one
+    is a plain dataclass because Python 3.9 lacks kw_only, but ``copy`` is the
+    supported mutation pattern either way.
     """
 
     message: Any
@@ -44,6 +47,10 @@ class MiddlewareContext(Generic[T]):
     source: str = "client"
     type: str = "request"
     fastmcp_context: Any = None
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+    def copy(self, **kwargs: Any) -> MiddlewareContext[T]:
+        return replace(self, **kwargs)
 
 
 # method -> the per-operation hook name, matching FastMCP.

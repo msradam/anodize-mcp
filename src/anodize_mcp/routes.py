@@ -41,7 +41,7 @@ class Response:
     media_type: Optional[str] = None
 
     def render(self) -> tuple[int, bytes, dict[str, str]]:
-        headers = dict(self.headers)
+        headers = self.headers.copy()
         if isinstance(self.body, (bytes, bytearray)):
             data = bytes(self.body)
             content_type = self.media_type or "application/octet-stream"

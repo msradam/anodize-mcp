@@ -122,10 +122,9 @@ class DispatchTest(unittest.TestCase):
 
     def test_unexpected_argument_rejected(self):
         resp = self.call("tools/call", {"name": "add", "arguments": {"a": 1, "b": 2, "x": 9}})
-        self.assertEqual(resp["error"]["code"], -32602)
+        self.assertTrue(resp["result"]["isError"])
 
     def test_non_json_returns_are_serializable(self):
-        import base64
         import datetime
         import json
 
@@ -168,8 +167,9 @@ class DispatchTest(unittest.TestCase):
             },
             session,
         )
-        expected = base64.b64encode(b"\x89PNG").decode("ascii")
-        self.assertEqual(bytes_resp["result"]["structuredContent"], {"result": expected})
+        # bytes are content only, with no structured output, as in FastMCP.
+        self.assertNotIn("structuredContent", bytes_resp["result"])
+        self.assertFalse(bytes_resp["result"]["isError"])
 
     def test_tool_returns_content_blocks(self):
         result = self.call("tools/call", {"name": "blocks", "arguments": {}})["result"]
@@ -179,8 +179,9 @@ class DispatchTest(unittest.TestCase):
         )
 
     def test_tool_invalid_args(self):
+        # Input validation failures are isError tool results, as in FastMCP.
         resp = self.call("tools/call", {"name": "add", "arguments": {"a": "x", "b": 1}})
-        self.assertEqual(resp["error"]["code"], -32602)
+        self.assertTrue(resp["result"]["isError"])
 
     def test_tool_error_is_result(self):
         result = self.call("tools/call", {"name": "boom", "arguments": {}})["result"]
@@ -194,7 +195,8 @@ class DispatchTest(unittest.TestCase):
 
     def test_unknown_tool(self):
         resp = self.call("tools/call", {"name": "nope", "arguments": {}})
-        self.assertEqual(resp["error"]["code"], -32601)
+        self.assertTrue(resp["result"]["isError"])
+        self.assertEqual(resp["result"]["content"][0]["text"], "Unknown tool: 'nope'")
 
     def test_context_logging(self):
         self.call("tools/call", {"name": "logs", "arguments": {}})

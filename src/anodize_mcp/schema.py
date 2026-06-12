@@ -51,6 +51,9 @@ class FieldInfo:
     examples: Optional[list[Any]] = None
 
     def apply_to_schema(self, schema: dict[str, Any]) -> None:
+        # Length constraints map to minItems/maxItems on arrays, as in
+        # JSON Schema and pydantic.
+        is_array = schema.get("type") == "array"
         mapping = {
             "description": self.description,
             "title": self.title,
@@ -58,8 +61,8 @@ class FieldInfo:
             "exclusiveMinimum": self.gt,
             "maximum": self.le,
             "exclusiveMaximum": self.lt,
-            "minLength": self.min_length,
-            "maxLength": self.max_length,
+            "minItems" if is_array else "minLength": self.min_length,
+            "maxItems" if is_array else "maxLength": self.max_length,
             "pattern": self.pattern,
             "examples": self.examples,
         }
@@ -97,7 +100,7 @@ def Field(  # noqa: N802 - deliberately Field() to read like pydantic
     )
 
 
-_CONSTRAINT_ATTRS = ("ge", "gt", "le", "lt", "min_length", "max_length")
+_CONSTRAINT_ATTRS = ("ge", "gt", "le", "lt", "min_length", "max_length", "pattern")
 
 
 def _absorb_constraints(info: FieldInfo, obj: Any) -> None:
@@ -151,13 +154,13 @@ _PRIMITIVE_SCHEMAS: dict[Any, dict[str, Any]] = {
     uuid.UUID: {"type": "string", "format": "uuid"},
     Decimal: {"type": "number"},
     bytes: {"type": "string", "contentEncoding": "base64"},
-    # Bare (unsubscripted) container annotations: keep the JSON type even though
-    # the item type is unknown.
-    list: {"type": "array"},
-    tuple: {"type": "array"},
-    set: {"type": "array", "uniqueItems": True},
-    frozenset: {"type": "array", "uniqueItems": True},
-    dict: {"type": "object"},
+    # Bare (unsubscripted) container annotations. FastMCP keeps the vacuous
+    # items/additionalProperties keywords, so emit them too.
+    list: {"type": "array", "items": {}},
+    tuple: {"type": "array", "items": {}},
+    set: {"type": "array", "items": {}, "uniqueItems": True},
+    frozenset: {"type": "array", "items": {}, "uniqueItems": True},
+    dict: {"type": "object", "additionalProperties": True},
 }
 
 
@@ -175,7 +178,7 @@ def _type_to_schema_inner(tp: Any) -> dict[str, Any]:
         return {}
 
     if tp in _PRIMITIVE_SCHEMAS:
-        return dict(_PRIMITIVE_SCHEMAS[tp])
+        return _PRIMITIVE_SCHEMAS[tp].copy()
 
     # Optional[X] / Union[...]
     if _compat.is_union(tp):
@@ -234,19 +237,67 @@ def _type_to_schema_inner(tp: Any) -> dict[str, Any]:
     if origin is dict:
         args = _compat.get_args(tp)
         value_schema = _type_to_schema_inner(args[1]) if len(args) == 2 else {}
-        return {"type": "object", "additionalProperties": value_schema or True}
+        dict_schema: dict[str, Any] = {
+            "type": "object",
+            "additionalProperties": value_schema or True,
+        }
+        # A constrained key type (enum, Literal) surfaces as propertyNames,
+        # as pydantic emits it.
+        if len(args) == 2 and args[0] is not str:
+            key_schema = _type_to_schema_inner(args[0])
+            if "enum" in key_schema:
+                dict_schema["propertyNames"] = key_schema
+        return dict_schema
 
     # Dataclasses become nested objects.
     if dataclasses.is_dataclass(tp) and isinstance(tp, type):
         return _dataclass_schema(tp)
 
-    # A pydantic-style model (the server's own choice) carries its own JSON Schema.
+    # TypedDicts become nested objects with their declared keys.
+    if _is_typeddict(tp):
+        return _typeddict_schema(tp)
+
+    # A pydantic-style model (the server's own choice) carries its own JSON
+    # Schema; FastMCP inlines $refs and prunes titles, so match that.
     if isinstance(tp, type) and hasattr(tp, "model_json_schema"):
         with contextlib.suppress(Exception):
-            return tp.model_json_schema()
+            return _inline_refs(tp.model_json_schema())
 
     # Unknown: leave unconstrained rather than guess wrongly.
     return {}
+
+
+def _inline_refs(schema: dict[str, Any]) -> dict[str, Any]:
+    """Inline ``$defs``/``$ref`` and drop ``title`` keys, as FastMCP does."""
+    defs = schema.get("$defs", {})
+
+    def walk(node: Any, seen: tuple[str, ...]) -> Any:
+        if isinstance(node, dict):
+            ref = node.get("$ref", "")
+            if ref.startswith("#/$defs/"):
+                name = ref[len("#/$defs/") :]
+                if name in defs and name not in seen:
+                    merged = {**defs[name], **{k: v for k, v in node.items() if k != "$ref"}}
+                    return walk(merged, seen + (name,))
+                return node  # recursive model: keep the ref
+            return {k: walk(v, seen) for k, v in node.items() if k not in ("title", "$defs")}
+        if isinstance(node, list):
+            return [walk(item, seen) for item in node]
+        return node
+
+    out = walk(schema, ())
+    # A recursive model still needs its $defs resolvable.
+    if _contains_ref(out):
+        out["$defs"] = {k: walk(v, (k,)) for k, v in defs.items()}
+    return out
+
+
+def _contains_ref(node: Any) -> bool:
+    if isinstance(node, dict):
+        return "$ref" in node or any(_contains_ref(v) for v in node.values())
+    if isinstance(node, list):
+        return any(_contains_ref(item) for item in node)
+    return False
 
 
 def _infer_enum_type(values: list[Any]) -> Optional[str]:
@@ -266,6 +317,52 @@ def _json_type_name(value: Any) -> Optional[str]:
     if isinstance(value, str):
         return "string"
     return None
+
+
+def _is_content_block_type(tp: type) -> bool:
+    from .content import ContentBlock
+
+    return tp in getattr(ContentBlock, "__args__", ())
+
+
+def _is_typeddict(tp: Any) -> bool:
+    return (
+        isinstance(tp, type)
+        and issubclass(tp, dict)
+        and hasattr(tp, "__required_keys__")
+        and hasattr(tp, "__annotations__")
+    )
+
+
+def _unwrap_required(annotation: Any) -> Any:
+    """Strip typing.Required/NotRequired wrappers (requiredness comes from
+    ``__required_keys__``)."""
+    origin = _compat.get_origin(annotation)
+    if origin is not None and getattr(origin, "__name__", "") in ("Required", "NotRequired"):
+        return _compat.get_args(annotation)[0]
+    # On some versions the wrapper itself is the special form.
+    name = getattr(getattr(annotation, "__origin__", None), "_name", None) or getattr(
+        annotation, "_name", None
+    )
+    if name in ("Required", "NotRequired"):
+        args = _compat.get_args(annotation)
+        if args:
+            return args[0]
+    return annotation
+
+
+def _typeddict_hints(tp: type) -> dict[str, Any]:
+    hints = _compat.get_type_hints(tp)
+    return {k: _unwrap_required(v) for k, v in hints.items()}
+
+
+def _typeddict_schema(tp: type) -> dict[str, Any]:
+    required = sorted(getattr(tp, "__required_keys__", frozenset()))
+    properties = {name: type_to_schema(hint) for name, hint in _typeddict_hints(tp).items()}
+    schema: dict[str, Any] = {"type": "object", "properties": properties}
+    if required:
+        schema["required"] = required
+    return schema
 
 
 def _dataclass_schema(tp: type) -> dict[str, Any]:
@@ -312,8 +409,10 @@ def build_params(func: Callable[..., Any], skip: tuple[str, ...] = ()) -> list[P
     for name, param in signature.parameters.items():
         if name in skip:
             continue
-        if param.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
-            continue
+        if param.kind is inspect.Parameter.VAR_KEYWORD:
+            raise ValueError("Functions with **kwargs are not supported as tools")
+        if param.kind is inspect.Parameter.VAR_POSITIONAL:
+            raise ValueError("Functions with *args are not supported as tools")
         annotation = hints.get(name, param.annotation)
         _, metadata = _compat.unwrap_annotated(annotation)
         field = _field_from_metadata(metadata)
@@ -351,19 +450,30 @@ def build_input_schema(specs: list[ParamSpec]) -> dict[str, Any]:
         # (Annotated[..., Field(description=...)]) did not supply one.
         if "description" not in prop and spec.field.description:
             prop["description"] = spec.field.description
-        if spec.default is not _UNSET and isinstance(
-            spec.default, (str, int, float, bool, type(None), list, dict)
+        if spec.default is not _UNSET and (
+            spec.default is None or isinstance(spec.default, (str, int, float, bool, list, dict))
         ):
             prop.setdefault("default", spec.default)
         properties[spec.name] = prop
         if spec.required:
             required.append(spec.name)
-    return {
+    schema: dict[str, Any] = {
         "type": "object",
         "properties": properties,
-        "required": required,
         "additionalProperties": False,
     }
+    # FastMCP omits the key when nothing is required.
+    if required:
+        schema["required"] = required
+    # $refs resolve from the document root, so $defs produced for a property
+    # (recursive pydantic models) must be hoisted there.
+    hoisted: dict[str, Any] = {}
+    for prop in properties.values():
+        if isinstance(prop, dict) and "$defs" in prop:
+            hoisted.update(prop.pop("$defs"))
+    if hoisted:
+        schema["$defs"] = hoisted
+    return schema
 
 
 _SECTION_RE = re.compile(
@@ -437,14 +547,38 @@ def output_schema_for(return_annotation: Any) -> tuple[Optional[dict[str, Any]],
     tp, _ = _compat.unwrap_annotated(return_annotation)
     if tp is type(None):
         return None, False
+    if tp is bytes:
+        # FastMCP emits bytes as content only, with no structured output.
+        return None, False
+    if isinstance(tp, type) and hasattr(tp, "to_content_block"):
+        # Image/Audio/File results are content, never structured output.
+        return None, False
+    if isinstance(tp, type) and tp.__name__ == "ToolResult":
+        # A ToolResult carries its own content and structured payload.
+        return None, False
+    if _compat.get_origin(tp) in (list, tuple, set, frozenset):
+        item = next(iter(_compat.get_args(tp)), None)
+        if isinstance(item, type) and (
+            hasattr(item, "to_content_block") or _is_content_block_type(item)
+        ):
+            # A sequence of content blocks is content, not structured output;
+            # FastMCP suppresses the schema here too.
+            return None, False
     if dataclasses.is_dataclass(tp) and isinstance(tp, type):
         return _dataclass_schema(tp), False
-    if _compat.get_origin(tp) is dict:
+    if isinstance(tp, type) and hasattr(tp, "model_json_schema"):
+        # A pydantic model return is object-shaped: unwrapped, like a dataclass.
+        with contextlib.suppress(Exception):
+            return _inline_refs(tp.model_json_schema()), False
+    if tp is dict or _compat.get_origin(tp) is dict:
         return type_to_schema(tp), False
     wrapped = {
         "type": "object",
         "properties": {"result": type_to_schema(tp)},
         "required": ["result"],
+        # FastMCP's schema-level wrap marker; its client honors _meta first
+        # but other consumers read this key.
+        "x-fastmcp-wrap-result": True,
     }
     return wrapped, True
 
@@ -492,7 +626,13 @@ def _coerce_arguments(specs: list[ParamSpec], arguments: dict[str, Any]) -> dict
 
 
 def _coerce(value: Any, tp: Any, path: str) -> Any:
-    tp, _ = _compat.unwrap_annotated(tp)
+    tp, metadata = _compat.unwrap_annotated(tp)
+    if metadata:
+        # Annotated constraints on nested values (TypedDict keys, list items)
+        # are enforced here; top-level parameters check theirs via ParamSpec.
+        coerced = _coerce(value, tp, path)
+        _check_constraints(coerced, _field_from_metadata(metadata), path=path)
+        return coerced
 
     if tp is Any or tp is inspect.Parameter.empty:
         return value
@@ -577,11 +717,27 @@ def _coerce(value: Any, tp: Any, path: str) -> Any:
             raise InvalidParams(f"{path}: invalid, expected object")
         args = _compat.get_args(tp)
         if len(args) == 2:
-            return {k: _coerce(v, args[1], f"{path}.{k}") for k, v in value.items()}
+            # JSON object keys arrive as strings; coerce them to the declared
+            # key type (int keys, enum keys) the way pydantic does.
+            return {
+                _coerce(k, args[0], f"{path}<key>"): _coerce(v, args[1], f"{path}.{k}")
+                for k, v in value.items()
+            }
         return dict(value)
 
     if dataclasses.is_dataclass(tp) and isinstance(tp, type):
         return _coerce_dataclass(value, tp, path)
+
+    if _is_typeddict(tp):
+        if not isinstance(value, dict):
+            raise InvalidParams(f"{path}: invalid, expected object")
+        hints = _typeddict_hints(tp)
+        for key in getattr(tp, "__required_keys__", frozenset()):
+            if key not in value:
+                raise InvalidParams(f"{path}.{key}: missing required key")
+        return {
+            k: _coerce(v, hints[k], f"{path}.{k}") if k in hints else v for k, v in value.items()
+        }
 
     # Build a pydantic-style model from the dict, using the server's own pydantic.
     if isinstance(tp, type) and isinstance(value, dict):
@@ -617,10 +773,8 @@ def _coerce_int(value: Any, path: str) -> int:
         if isinstance(value, float) and value.is_integer():
             return int(value)
         if isinstance(value, str):
-            try:
+            with contextlib.suppress(ValueError):
                 return int(value.strip())
-            except ValueError:
-                pass
     raise InvalidParams(f"{path}: invalid, expected integer")
 
 
@@ -630,10 +784,8 @@ def _coerce_float(value: Any, path: str) -> float:
     if isinstance(value, (int, float)):
         return float(value)
     if not _strict.get() and isinstance(value, str):
-        try:
+        with contextlib.suppress(ValueError):
             return float(value.strip())
-        except ValueError:
-            pass
     raise InvalidParams(f"{path}: invalid, expected number")
 
 
@@ -691,10 +843,8 @@ def _coerce_uuid(value: Any, path: str) -> uuid.UUID:
 
 
 def _coerce_enum(value: Any, tp: type[enum.Enum], path: str) -> Any:
-    try:
+    with contextlib.suppress(ValueError):
         return tp(value)
-    except ValueError:
-        pass
     if isinstance(value, str) and hasattr(tp, value):
         return tp[value]
     raise InvalidParams(f"{path}: {value!r} is not a valid {tp.__name__}")
@@ -711,7 +861,7 @@ def _coerce_dataclass(value: Any, tp: type, path: str) -> Any:
         annotation = hints.get(f.name, f.type)
         if f.name in value:
             kwargs[f.name] = _coerce(value[f.name], annotation, f"{path}.{f.name}")
-        elif f.default is dataclasses.MISSING and f.default_factory is dataclasses.MISSING:
+        elif f.default is dataclasses.MISSING is f.default_factory:
             raise InvalidParams(f"{path}.{f.name}: missing required field")
     return tp(**kwargs)
 

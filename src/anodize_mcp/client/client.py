@@ -16,15 +16,19 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import inspect
+import json
+import logging
 import warnings
 from queue import Queue
 from typing import Any, Callable, Optional, Union
 
 from ..attrdict import wrap as _wrap
-from ..exceptions import INTERNAL_ERROR, McpError
+from ..exceptions import INTERNAL_ERROR, McpError, ToolError
 from ..protocol import (
     LATEST_PROTOCOL_VERSION,
+    json_default,
     make_error,
     make_notification,
     make_request,
@@ -33,16 +37,20 @@ from ..protocol import (
 from ..transports.memory import SHUTDOWN
 from .transports import _make_transport
 
+logger = logging.getLogger(__name__)
 
-class ClientError(McpError):
+
+class ClientError(McpError, ToolError):
     """A client-side request failure.
 
-    Subclasses :class:`McpError` so it is catchable as the SDK's ``McpError`` and
-    exposes the structured ``.error`` (code/message/data).
+    Subclasses :class:`McpError` so it is catchable as the SDK's ``McpError``
+    (with the structured ``.error``), and :class:`ToolError` so FastMCP-style
+    ``except ToolError`` around ``call_tool`` ports unchanged.
     """
 
     def __init__(self, message: str, code: Optional[int] = None, data: Any = None):
         super().__init__(message, code=code if code is not None else INTERNAL_ERROR, data=data)
+        self.details = None
 
 
 class CallToolResult:
@@ -83,8 +91,9 @@ class Client:
         roots: Optional[Union[list[dict[str, Any]], Callable[[], Any]]] = None,
         log_handler: Optional[Callable[[dict[str, Any]], Any]] = None,
         progress_handler: Optional[Callable[[dict[str, Any]], Any]] = None,
+        message_handler: Optional[Callable[[dict[str, Any]], Any]] = None,
         client_info: Optional[dict[str, Any]] = None,
-        timeout: float = 30.0,
+        timeout: Optional[float] = None,
         env: Optional[dict[str, str]] = None,
         auto_initialize: bool = True,
     ):
@@ -95,6 +104,7 @@ class Client:
         self._roots = roots
         self._log_handler = log_handler
         self._progress_handler = progress_handler
+        self._message_handler = message_handler
         self._client_info = client_info or {"name": "anodize-client", "version": "0.4.0"}
         self._timeout = timeout
         self._outbox: Queue[Any] = Queue()
@@ -114,10 +124,22 @@ class Client:
         if self._entered > 1:
             return self
         self._loop = asyncio.get_event_loop()
+        # A fresh outbox and handshake state allow re-entering after close,
+        # as FastMCP's client does; a stale SHUTDOWN must not leak in.
+        self._outbox = Queue()
+        self._pending.clear()
+        self.initialize_result = None
         self._transport.start(self._outbox)
         self._reader_task = asyncio.create_task(self._read_loop())
         if self._auto_initialize:
-            await self._initialize()
+            # __aexit__ never runs when __aenter__ raises; close here or the
+            # transport (and the executor thread reading it) leaks and blocks
+            # event-loop shutdown.
+            try:
+                await self._initialize()
+            except BaseException:
+                await self.close()
+                raise
         return self
 
     async def initialize(self) -> Any:
@@ -153,9 +175,18 @@ class Client:
                         future.set_exception(ClientError("connection closed"))
                 self._pending.clear()
                 return
-            await self._dispatch_incoming(message)
+            # A failing notification handler must not kill the session;
+            # FastMCP logs callback errors and keeps reading.
+            try:
+                await self._dispatch_incoming(message)
+            except Exception:
+                logger.exception("error handling incoming message")
 
     async def _dispatch_incoming(self, message: dict[str, Any]) -> None:
+        # FastMCP's message_handler observes every server-to-client message
+        # (notifications and requests) alongside the normal routing.
+        if self._message_handler is not None and message.get("method") is not None:
+            await _call(self._message_handler, _wrap(message))
         method = message.get("method")
         if method is None:
             request_id = message.get("id")
@@ -175,7 +206,9 @@ class Client:
             if method == "sampling/createMessage" and self._sampling_handler is not None:
                 result = _sampling_result(await _call_sampling(self._sampling_handler, params))
             elif method == "elicitation/create" and self._elicitation_handler is not None:
-                result = _elicit_result(await _call_elicitation(self._elicitation_handler, params))
+                result = _elicit_result(
+                    await _call_elicitation(self._elicitation_handler, params), params
+                )
             elif method == "roots/list":
                 result = {"roots": self._roots_list()}
             else:
@@ -187,33 +220,54 @@ class Client:
 
     async def _handle_notification(self, method: str, params: dict[str, Any]) -> None:
         if method == "notifications/message" and self._log_handler is not None:
-            await _call(self._log_handler, params)
+            # Wrapped so FastMCP-style handlers reading .level/.logger/.data work.
+            await _call(self._log_handler, _wrap(params))
         elif method == "notifications/progress":
             token = params.get("progressToken")
             handler = self._progress_handlers.get(token) if token is not None else None
             handler = handler or self._progress_handler
             if handler is not None:
-                await _call(handler, params)
+                await _call_progress(handler, params)
 
     def _roots_list(self) -> list[dict[str, Any]]:
         roots = self._roots() if callable(self._roots) else self._roots
-        return list(roots or [])
+        out: list[dict[str, Any]] = []
+        for root in roots or []:
+            # FastMCP accepts strings, Root-like objects, and dicts.
+            if isinstance(root, str):
+                out.append({"uri": root})
+            elif isinstance(root, dict):
+                out.append(root)
+            else:
+                entry: dict[str, Any] = {"uri": str(getattr(root, "uri", root))}
+                name = getattr(root, "name", None)
+                if name is not None:
+                    entry["name"] = name
+                out.append(entry)
+        return out
 
     # -- requests ---------------------------------------------------------
 
     async def _request(
         self, method: str, params: Optional[dict[str, Any]] = None, timeout: Optional[float] = None
     ) -> Any:
+        if not self.is_connected():
+            # Without this a request after close() waits forever on a reader
+            # that no longer exists; FastMCP raises the same way.
+            raise RuntimeError(
+                "Client is not connected. Use the 'async with client:' context manager first."
+            )
         assert self._loop is not None
         self._req_id += 1
         request_id = self._req_id
         future: asyncio.Future[dict[str, Any]] = self._loop.create_future()
         self._pending[request_id] = future
         self._transport.send(make_request(request_id, method, params))
+        # No client-level timeout by default, matching FastMCP; transports
+        # still bound their own reads.
+        chosen = timeout if timeout is not None else self._timeout
         try:
-            response = await asyncio.wait_for(
-                future, timeout if timeout is not None else self._timeout
-            )
+            response = await future if chosen is None else await asyncio.wait_for(future, chosen)
         except asyncio.TimeoutError as exc:
             self._pending.pop(request_id, None)
             raise ClientError(f"request {method!r} timed out") from exc
@@ -381,12 +435,16 @@ class Client:
         self, name: str, arguments: Optional[dict[str, Any]] = None
     ) -> dict[str, Any]:
         return _wrap(
-            await self._request("prompts/get", {"name": name, "arguments": arguments or {}})
+            await self._request(
+                "prompts/get", {"name": name, "arguments": _stringify_args(arguments)}
+            )
         )
 
     async def get_prompt_mcp(self, name: str, arguments: Optional[dict[str, Any]] = None) -> Any:
         return _wrap(
-            await self._request("prompts/get", {"name": name, "arguments": arguments or {}})
+            await self._request(
+                "prompts/get", {"name": name, "arguments": _stringify_args(arguments)}
+            )
         )
 
     async def complete(
@@ -405,6 +463,14 @@ class Client:
         await self._request("logging/setLevel", {"level": level})
 
 
+def _stringify_args(arguments: Optional[dict[str, Any]]) -> dict[str, str]:
+    """JSON-stringify non-string prompt arguments; MCP carries them as strings."""
+    return {
+        k: v if isinstance(v, str) else json.dumps(v, default=json_default)
+        for k, v in (arguments or {}).items()
+    }
+
+
 async def _call(handler: Callable[..., Any], params: dict[str, Any]) -> Any:
     out = handler(params)
     if inspect.iscoroutine(out):
@@ -414,23 +480,61 @@ async def _call(handler: Callable[..., Any], params: dict[str, Any]) -> Any:
 
 def _positional_count(fn: Callable[..., Any]) -> int:
     try:
-        kinds = (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
-        return sum(1 for p in inspect.signature(fn).parameters.values() if p.kind in kinds)
+        params = inspect.signature(fn).parameters.values()
     except (TypeError, ValueError):
         return 1
+    # *args accepts everything; treat it as the full FastMCP signature.
+    if any(p.kind is inspect.Parameter.VAR_POSITIONAL for p in params):
+        return 99
+    kinds = (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    return sum(1 for p in params if p.kind in kinds)
+
+
+async def _call_progress(handler: Callable[..., Any], params: dict[str, Any]) -> Any:
+    """Invoke a progress handler, supporting both anodize's ``handler(params)``
+    and FastMCP's ``handler(progress, total, message)`` signatures."""
+
+    def as_float(key: str) -> Optional[float]:
+        value = params.get(key)
+        # FastMCP's typed params deliver floats.
+        return float(value) if isinstance(value, (int, float)) else value
+
+    n = _positional_count(handler)
+    if n >= 3:
+        out = handler(as_float("progress"), as_float("total"), params.get("message"))
+    elif n == 2:
+        out = handler(as_float("progress"), as_float("total"))
+    else:
+        out = handler(_wrap(params))
+    if inspect.iscoroutine(out):
+        out = await out
+    return out
+
+
+_SAMPLING_OPTIONAL_FIELDS = (
+    "systemPrompt",
+    "temperature",
+    "stopSequences",
+    "modelPreferences",
+    "includeContext",
+    "metadata",
+)
 
 
 async def _call_sampling(handler: Callable[..., Any], params: dict[str, Any]) -> Any:
     """Invoke a sampling handler, supporting both anodize's ``handler(params)`` and
     FastMCP's ``handler(messages, params, context)`` signatures."""
+    # FastMCP's typed params expose unset optional fields as None; fill them in
+    # so params.modelPreferences and friends never raise.
+    wrapped = _wrap({**{k: None for k in _SAMPLING_OPTIONAL_FIELDS}, **params})
     messages = _wrap(params.get("messages", []))
     n = _positional_count(handler)
     if n >= 3:
-        out = handler(messages, params, None)
+        out = handler(messages, wrapped, None)
     elif n == 2:
-        out = handler(messages, params)
+        out = handler(messages, wrapped)
     else:
-        out = handler(params)
+        out = handler(wrapped)
     if inspect.iscoroutine(out):
         out = await out
     return out
@@ -451,13 +555,14 @@ class _ElicitResponse:
 async def _call_elicitation(handler: Callable[..., Any], params: dict[str, Any]) -> Any:
     """Invoke an elicitation handler, supporting anodize's ``handler(params)`` and
     FastMCP's ``handler(message, response_type, params, context)`` signatures."""
+    wrapped = _wrap(params)
     n = _positional_count(handler)
     if n >= 4:
-        out = handler(params.get("message"), _ElicitResponse, params, None)
+        out = handler(params.get("message"), _ElicitResponse, wrapped, None)
     elif n == 2:
-        out = handler(params.get("message"), params)
+        out = handler(params.get("message"), wrapped)
     else:
-        out = handler(params)
+        out = handler(wrapped)
     if inspect.iscoroutine(out):
         out = await out
     return out
@@ -473,9 +578,47 @@ def _sampling_result(value: Any) -> dict[str, Any]:
     return value
 
 
-def _elicit_result(value: Any) -> dict[str, Any]:
-    if isinstance(value, str):
-        return {"action": value}
+_ELICIT_ACTIONS = ("accept", "decline", "cancel")
+
+
+def _elicit_result(value: Any, params: dict[str, Any]) -> dict[str, Any]:
+    """Build the wire result from a handler return, accepting both conventions.
+
+    anodize convention: a bare action string or a raw protocol dict with an
+    ``action`` key passes through. FastMCP convention: any other return is an
+    accept whose content is the value (dataclasses and pydantic models are
+    serialized; a scalar is wrapped as ``{"value": ...}`` when the requested
+    schema is the scalar shorthand, as FastMCP's client does).
+    """
     if isinstance(value, _ElicitResponse):
         return {"action": "accept", "content": value._fields}
-    return value
+    if isinstance(value, str) and value in _ELICIT_ACTIONS:
+        return {"action": value}
+    if isinstance(value, dict):
+        if value.get("action") in _ELICIT_ACTIONS:
+            return value
+        return {"action": "accept", "content": value}
+    if value is None:
+        return {"action": "accept"}
+    if hasattr(value, "action"):  # an ElicitResult, either anodize's or FastMCP's
+        out: dict[str, Any] = {"action": value.action}
+        content = getattr(value, "content", None)
+        if content is None:
+            content = getattr(value, "data", None)
+        if content is not None:
+            out["content"] = (
+                content if isinstance(content, dict) else _elicit_content(content, params)
+            )
+        return out
+    return {"action": "accept", "content": _elicit_content(value, params)}
+
+
+def _elicit_content(value: Any, params: dict[str, Any]) -> dict[str, Any]:
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return dataclasses.asdict(value)
+    if hasattr(value, "model_dump"):
+        return value.model_dump()
+    schema = params.get("requestedSchema") or {}
+    if set(schema.get("properties", {}).keys()) == {"value"}:
+        return {"value": value}
+    raise ValueError(f"elicitation responses must be a JSON object; received {value!r}")
