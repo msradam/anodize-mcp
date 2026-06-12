@@ -224,7 +224,20 @@ class Client:
 
     def _roots_list(self) -> list[dict[str, Any]]:
         roots = self._roots() if callable(self._roots) else self._roots
-        return list(roots or [])
+        out: list[dict[str, Any]] = []
+        for root in roots or []:
+            # FastMCP accepts strings, Root-like objects, and dicts.
+            if isinstance(root, str):
+                out.append({"uri": root})
+            elif isinstance(root, dict):
+                out.append(root)
+            else:
+                entry: dict[str, Any] = {"uri": str(getattr(root, "uri", root))}
+                name = getattr(root, "name", None)
+                if name is not None:
+                    entry["name"] = name
+                out.append(entry)
+        return out
 
     # -- requests ---------------------------------------------------------
 
@@ -485,10 +498,22 @@ async def _call_progress(handler: Callable[..., Any], params: dict[str, Any]) ->
     return out
 
 
+_SAMPLING_OPTIONAL_FIELDS = (
+    "systemPrompt",
+    "temperature",
+    "stopSequences",
+    "modelPreferences",
+    "includeContext",
+    "metadata",
+)
+
+
 async def _call_sampling(handler: Callable[..., Any], params: dict[str, Any]) -> Any:
     """Invoke a sampling handler, supporting both anodize's ``handler(params)`` and
     FastMCP's ``handler(messages, params, context)`` signatures."""
-    wrapped = _wrap(params)  # so handlers reading params.systemPrompt etc. work
+    # FastMCP's typed params expose unset optional fields as None; fill them in
+    # so params.modelPreferences and friends never raise.
+    wrapped = _wrap({**{k: None for k in _SAMPLING_OPTIONAL_FIELDS}, **params})
     messages = _wrap(params.get("messages", []))
     n = _positional_count(handler)
     if n >= 3:

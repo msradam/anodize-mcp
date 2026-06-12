@@ -225,16 +225,18 @@ class Context:
 
     def list_resources(self) -> Any:
         """List the server's registered (static) resources."""
-        return defer([r.describe() for r in self._server._resources.values()])
+        return defer(attr_wrap([r.describe() for r in self._server._resources.values()]))
 
     def list_prompts(self) -> Any:
         """List the server's registered prompts."""
-        return defer([p.describe() for p in self._server._prompts.values()])
+        return defer(attr_wrap([p.describe() for p in self._server._prompts.values()]))
 
     def get_prompt(self, name: str, arguments: Optional[dict[str, Any]] = None) -> Any:
         """Render one of the server's prompts."""
         params = {"name": name, "arguments": arguments or {}}
-        return defer(self._server._handle_prompt_get(params, self._session, self._request_id))
+        return defer(
+            attr_wrap(self._server._handle_prompt_get(params, self._session, self._request_id))
+        )
 
     # -- server-initiated requests to the client --------------------------
 

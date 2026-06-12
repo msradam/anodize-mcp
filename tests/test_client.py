@@ -215,6 +215,36 @@ class InMemoryClientTest(unittest.IsolatedAsyncioTestCase):
                 r = await c.call_tool("ask", {})
                 self.assertEqual(r.text, "accept:thai")
 
+    async def test_ctx_introspection_has_attribute_access(self):
+        mcp = build_server()
+
+        @mcp.tool
+        async def introspect(ctx: Context) -> str:
+            resources = await ctx.list_resources()
+            prompts = await ctx.list_prompts()
+            rendered = await ctx.get_prompt("greet", {"language": "fr"})
+            return f"{resources[0].uri}|{prompts[0].name}|{rendered.messages[0].role}"
+
+        async with Client(mcp) as c:
+            r = await c.call_tool("introspect", {})
+            self.assertEqual(r.text, "config://app|greet|user")
+
+    async def test_string_roots(self):
+        async with Client(build_server(), roots=["file:///w"]) as c:
+            r = await c.call_tool("where", {})
+            self.assertEqual(r.text, "file:///w")
+
+    async def test_sampling_params_optional_fields_default_none(self):
+        seen = {}
+
+        def handler(messages, params, context):
+            seen["prefs"] = params.modelPreferences
+            return "ok"
+
+        async with Client(build_server(), sampling_handler=handler) as c:
+            await c.call_tool("review", {"code": "x"})
+        self.assertIsNone(seen["prefs"])
+
     async def test_ctx_read_resource_is_fastmcp_shaped(self):
         mcp = AnodizeMCP("rr")
 
