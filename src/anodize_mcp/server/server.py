@@ -439,8 +439,7 @@ class AnodizeMCP:
         ``"tool:name@version"`` form; ``tags`` hides every tool carrying any
         of the given tags. Version and provider filters are not implemented.
         """
-        for name in self._visibility_matches(names, keys, tags):
-            self._disabled.add(name)
+        self._disabled.update(self._visibility_matches(names, keys, tags))
         self.notify_tools_changed()
 
     def enable(
@@ -452,8 +451,7 @@ class AnodizeMCP:
         **_ignored: Any,
     ) -> None:
         """Reverse :meth:`disable` for the matching tools."""
-        for name in self._visibility_matches(names, keys, tags):
-            self._disabled.discard(name)
+        self._disabled.difference_update(self._visibility_matches(names, keys, tags))
         self.notify_tools_changed()
 
     def _visibility_matches(self, names: Any, keys: Any, tags: Any) -> set[str]:
@@ -694,7 +692,7 @@ class AnodizeMCP:
         if method == "resources/list":
             return list(self._resources.values())
         if method == "resources/templates/list":
-            return list(self._templates)
+            return self._templates.copy()
         return list(self._prompts.values())
 
     def _route(self, method: str, params: dict[str, Any], session: Session, request_id: Any) -> Any:
@@ -917,7 +915,7 @@ class AnodizeMCP:
         session: Session,
         request_id: Any,
     ) -> Any:
-        kwargs = dict(variables)
+        kwargs = variables.copy()
         if context_param:
             kwargs[context_param] = Context(session, self, request_id)
         try:

@@ -148,7 +148,7 @@ class CompletionTest(unittest.TestCase):
 
         @mcp.complete_prompt("greet")
         def complete_two(argument, value):
-            return [w for w in ["english", "spanish", "swedish"] if w.startswith(value)]
+            return [w for w in ("english", "spanish", "swedish") if w.startswith(value)]
 
         @mcp.resource("doc://{name}")
         def doc(name: str) -> str:
@@ -428,9 +428,8 @@ class BidirectionalTest(unittest.TestCase):
 
     def test_request_timeout(self):
         mcp = Anodize("b")
-        session = mcp.new_session(send=lambda m: None)
         with self.assertRaises(McpError) as cm:
-            session.send_request("roots/list", {}, timeout=0.2)
+            mcp.new_session(send=lambda m: None).send_request("roots/list", {}, timeout=0.2)
         self.assertEqual(cm.exception.data, {"reason": "timeout", "method": "roots/list"})
 
 

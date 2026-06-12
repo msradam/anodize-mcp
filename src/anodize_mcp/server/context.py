@@ -220,7 +220,7 @@ class Context:
         raw = self._server.read_resource(uri, self._session)
         items = []
         for item in raw:
-            entry = dict(item)
+            entry = item.copy()
             if entry.get("text") is not None:
                 entry.setdefault("content", entry["text"])
             elif entry.get("blob") is not None:
@@ -329,7 +329,7 @@ class Context:
                     data = schema.model_validate(content)
             elif schema in (str, int, float, bool) and "value" in content:
                 data = content["value"]
-        elif action == "accept" and schema is None and data is None:
+        elif action == "accept" and schema is None is data:
             # FastMCP's schema-less confirmation accepts with empty data.
             data = {}
         return defer(ElicitResult(action=action, data=data))

@@ -32,7 +32,7 @@ class ToolResult:
     is_error: bool = False
 
     def __post_init__(self) -> None:
-        if self.content is None and self.structured_content is None:
+        if self.content is None is self.structured_content:
             raise ValueError("Either content or structured_content must be provided")
         if self.content is None:
             from ..content import to_jsonable

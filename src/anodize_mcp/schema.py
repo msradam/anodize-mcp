@@ -178,7 +178,7 @@ def _type_to_schema_inner(tp: Any) -> dict[str, Any]:
         return {}
 
     if tp in _PRIMITIVE_SCHEMAS:
-        return dict(_PRIMITIVE_SCHEMAS[tp])
+        return _PRIMITIVE_SCHEMAS[tp].copy()
 
     # Optional[X] / Union[...]
     if _compat.is_union(tp):
@@ -450,8 +450,8 @@ def build_input_schema(specs: list[ParamSpec]) -> dict[str, Any]:
         # (Annotated[..., Field(description=...)]) did not supply one.
         if "description" not in prop and spec.field.description:
             prop["description"] = spec.field.description
-        if spec.default is not _UNSET and isinstance(
-            spec.default, (str, int, float, bool, type(None), list, dict)
+        if spec.default is not _UNSET and (
+            spec.default is None or isinstance(spec.default, (str, int, float, bool, list, dict))
         ):
             prop.setdefault("default", spec.default)
         properties[spec.name] = prop
@@ -773,10 +773,8 @@ def _coerce_int(value: Any, path: str) -> int:
         if isinstance(value, float) and value.is_integer():
             return int(value)
         if isinstance(value, str):
-            try:
+            with contextlib.suppress(ValueError):
                 return int(value.strip())
-            except ValueError:
-                pass
     raise InvalidParams(f"{path}: invalid, expected integer")
 
 
@@ -786,10 +784,8 @@ def _coerce_float(value: Any, path: str) -> float:
     if isinstance(value, (int, float)):
         return float(value)
     if not _strict.get() and isinstance(value, str):
-        try:
+        with contextlib.suppress(ValueError):
             return float(value.strip())
-        except ValueError:
-            pass
     raise InvalidParams(f"{path}: invalid, expected number")
 
 
@@ -847,10 +843,8 @@ def _coerce_uuid(value: Any, path: str) -> uuid.UUID:
 
 
 def _coerce_enum(value: Any, tp: type[enum.Enum], path: str) -> Any:
-    try:
+    with contextlib.suppress(ValueError):
         return tp(value)
-    except ValueError:
-        pass
     if isinstance(value, str) and hasattr(tp, value):
         return tp[value]
     raise InvalidParams(f"{path}: {value!r} is not a valid {tp.__name__}")
@@ -867,7 +861,7 @@ def _coerce_dataclass(value: Any, tp: type, path: str) -> Any:
         annotation = hints.get(f.name, f.type)
         if f.name in value:
             kwargs[f.name] = _coerce(value[f.name], annotation, f"{path}.{f.name}")
-        elif f.default is dataclasses.MISSING and f.default_factory is dataclasses.MISSING:
+        elif f.default is dataclasses.MISSING is f.default_factory:
             raise InvalidParams(f"{path}.{f.name}: missing required field")
     return tp(**kwargs)
 

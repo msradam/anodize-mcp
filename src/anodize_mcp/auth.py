@@ -249,8 +249,7 @@ class JWTVerifier:
             raise _InvalidToken("signature mismatch") from exc
 
     def _rsa_key_from_jwks(self, kid: Optional[str], rsa: Any) -> Any:
-        jwks = self._load_jwks()
-        keys = jwks.get("keys", [])
+        keys = self._load_jwks().get("keys", [])
         jwk = next((k for k in keys if kid is None or k.get("kid") == kid), None)
         if jwk is None:
             raise _InvalidToken("no matching JWKS key")

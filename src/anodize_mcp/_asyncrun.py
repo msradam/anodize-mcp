@@ -37,8 +37,7 @@ class _LoopRunner:
 
     def run(self, coro: Any) -> Any:
         loop = self._ensure_loop()
-        future = asyncio.run_coroutine_threadsafe(coro, loop)
-        return future.result()
+        return asyncio.run_coroutine_threadsafe(coro, loop).result()
 
 
 _runner = _LoopRunner()

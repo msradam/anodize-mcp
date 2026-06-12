@@ -206,7 +206,7 @@ def _make_handler(manager: _Manager) -> type[BaseHTTPRequestHandler]:
                 status, data, headers = coerce_response(result).render()
             except Exception as exc:  # noqa: BLE001
                 status, data, headers = (
-                    int(HTTPStatus.INTERNAL_SERVER_ERROR),
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
                     json.dumps({"error": str(exc)}).encode("utf-8"),
                     {"Content-Type": "application/json"},
                 )

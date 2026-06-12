@@ -61,7 +61,7 @@ if __name__ == "__main__":
     mcp.run()  # stdio transport
 ```
 
-Tool input schemas are generated from type hints. Supported types include the primitives, `Optional`/`Union`, `list`/`dict`/`set`/`tuple`, `Literal`, `Enum`, dataclasses, and stdlib types (`datetime`, `date`, `UUID`, `Decimal`). Arguments are validated and coerced at call time. Constraints come from `Annotated`:
+Tool input schemas are generated from type hints. Supported types include the primitives, `Optional`/`Union`, `list`/`dict`/`set`/`tuple`, `Literal`, `Enum`, dataclasses, `TypedDict`, and stdlib types (`datetime`, `date`, `UUID`, `Decimal`). Arguments are validated and coerced at call time. Constraints come from `Annotated`:
 
 ```python
 from typing import Annotated
@@ -110,12 +110,12 @@ FastMCP).
 ### What ports unchanged
 
 - `FastMCP(name, instructions=..., version=..., lifespan=..., icons=..., website_url=..., on_duplicate=..., mask_error_details=..., auth=...)`; `@mcp.tool`, `@mcp.resource`, `@mcp.prompt` with `name`/`title`/`description`/`annotations`/`tags`; `add_tool`/`add_resource`/`add_prompt`
-- `@mcp.custom_route(path, methods=...)`, `mcp.add_middleware(...)`, `mcp.list_tools/list_resources/list_prompts/get_tool/get_prompt/call_tool/render_prompt`, `mcp.disable_tool/enable_tool`
+- `@mcp.custom_route(path, methods=...)`, `mcp.add_middleware(...)`, `mcp.list_tools/list_resources/list_prompts/get_tool/get_prompt/call_tool/render_prompt`, `mcp.disable_tool/enable_tool`, `mcp.disable(names=..., tags=...)`/`mcp.enable(...)`
 - `ctx: Context` injection; `await ctx.debug/info/notice/warning/error(...)`, `ctx.log(message, level=...)`, `report_progress`, `read_resource`, `list_resources`, `list_prompts`, `get_prompt`, `get_state/set_state/delete_state`, `send_notification`, `sample` (result `.text`), `elicit(message, dataclass)` (result `.action`/`.data`), `list_roots`; `ctx.session_id`/`client_id`/`request_id`/`fastmcp`/`transport`/`request_context.lifespan_context`/`access_token`
-- Parameter types: primitives, `Optional`/`Union`/`Literal`/`Enum`, `list`/`dict`/`set`/`tuple`, `datetime`/`date`/`UUID`/`Decimal`, dataclasses, **`pydantic.BaseModel`** (built via the server's own pydantic), and constraints via either AnodizeMCP's `Field` or **`pydantic.Field`/`annotated_types`** (`Annotated[int, Field(ge=0)]` validates)
+- Parameter types: primitives, `Optional`/`Union`/`Literal`/`Enum`, `list`/`dict`/`set`/`tuple`, `datetime`/`date`/`UUID`/`Decimal`, dataclasses, `TypedDict`, **`pydantic.BaseModel`** (built via the server's own pydantic), and constraints via either AnodizeMCP's `Field` or **`pydantic.Field`/`annotated_types`** (`Annotated[int, Field(ge=0)]` validates)
 - Return types: `str`, numbers, `dict`, `list`, dataclasses, pydantic models, `bytes`, `None`, content blocks (`TextContent`, `ImageContent`, ...), the `Image`/`Audio`/`File` helpers, and `ToolResult` (including `is_error`)
 - `mcp.run(transport="stdio"|"http", host=..., port=...)`
-- `fastmcp.Client` in-memory, over stdio, and over Streamable HTTP (`Client("http://host/mcp")`)
+- `fastmcp.Client` in-memory, over stdio, over Streamable HTTP (`Client("http://host/mcp")`), and via a path to a Python script (`Client("server.py")`)
 
 ### What is not implemented as of now (use the alternative)
 
@@ -140,18 +140,20 @@ newer one.
 ### Conformance against FastMCP's own test suite
 
 As a parity check, FastMCP's tests can be pointed at AnodizeMCP by aliasing
-`fastmcp.FastMCP` and `fastmcp.Client` to the AnodizeMCP equivalents (pytest loads
-plugins before test modules, so `from fastmcp import FastMCP` then resolves to
-AnodizeMCP). Run against FastMCP 3.x's `tests/tools`, `tests/resources`, and
-`tests/prompts` with only that alias and the optional `name`, **554 of 606 pass**.
+`fastmcp.FastMCP`, `fastmcp.Client`, and the middleware modules to the AnodizeMCP
+equivalents before test modules import. The `conformance/` directory contains the
+pytest plugin and instructions.
 
-This is the tool/resource/prompt behavioral subset, not FastMCP's full suite
-(which also covers the CLI, OpenAPI generation, telemetry, and other features
-not implemented as of now). The 52 failures fall into three groups: features
-AnodizeMCP does not implement yet (per-tool `timeout`, the thread-offload API, tool
-transformation), tests that assert on the official `mcp` SDK result objects
-(AnodizeMCP's client returns dicts), and a small number of edge cases under
-review.
+Against FastMCP 3.4.2, **169 tests pass in full** (the CI green gate, covering
+prompts, resources, tools output schema, and rate-limiting/timing middleware). The
+broader core suite (tools, resources, prompts, server, middleware, client) reaches
+**599 of 762 (79%)**.
+
+The remaining failures fall into two design-boundary categories: tests that assert
+`isinstance(x, mcp.types.*)` (AnodizeMCP returns plain dicts to avoid the Rust
+dependency) and features outside the implemented scope (server mounting, task
+queues, provider integrations, `FunctionTool`/`Tool.from_function`). Both are
+documented in `conformance/README.md`.
 
 ## Protocol coverage
 

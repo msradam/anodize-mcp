@@ -139,7 +139,7 @@ class StreamableHttpTransport:
         threading.Thread(target=self._post, args=(message,), daemon=True).start()
 
     def _request_headers(self, accept: str) -> dict[str, str]:
-        headers = {"Accept": accept, **self._headers}
+        headers = {"Accept": accept} | self._headers
         if self._session_id:
             headers["Mcp-Session-Id"] = self._session_id
         return headers

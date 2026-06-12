@@ -96,7 +96,7 @@ class ToolResultTest(unittest.TestCase):
         self.assertIs(ReExported, ToolResult)
 
 
-class Round6ParityTest(unittest.TestCase):
+class ToolReturnTypeTest(unittest.TestCase):
     def test_list_return_is_json_text(self):
         mcp = AnodizeMCP("l")
 
@@ -232,7 +232,7 @@ class Round6ParityTest(unittest.TestCase):
         self.assertEqual(prop["properties"]["inner"]["properties"]["x"]["type"], "integer")
 
 
-class Round7ParityTest(unittest.TestCase):
+class DictSchemaTest(unittest.TestCase):
     def test_int_keyed_dict_coercion(self):
         from typing import Dict
 
@@ -353,7 +353,7 @@ class Round7ParityTest(unittest.TestCase):
         self.assertGreater(counts["n"], 0)
 
 
-class Round9ParityTest(unittest.TestCase):
+class TypeSerializationTest(unittest.TestCase):
     def test_non_finite_floats_are_errors(self):
         mcp = AnodizeMCP("nf")
 
@@ -469,7 +469,7 @@ class Round9ParityTest(unittest.TestCase):
             self.assertIn("$defs", schema)
 
 
-class Round10ParityTest(unittest.TestCase):
+class ToolInputHandlingTest(unittest.TestCase):
     def test_var_args_rejected_at_registration(self):
         mcp = AnodizeMCP("va")
         with self.assertRaises(ValueError):
@@ -592,7 +592,7 @@ class Round10ParityTest(unittest.TestCase):
         self.assertEqual(asyncio.run(main()).text, "accept")
 
 
-class Round11ParityTest(unittest.TestCase):
+class ClientStateTest(unittest.TestCase):
     def test_template_description_keeps_args_section(self):
         mcp = AnodizeMCP("td")
 
@@ -679,7 +679,7 @@ class Round11ParityTest(unittest.TestCase):
         self.assertEqual(asyncio.run(main()).text, "accept:{}")
 
 
-class Round13ParityTest(unittest.TestCase):
+class TypedDictAndDocstringTest(unittest.TestCase):
     def test_returns_only_docstring_kept_in_full(self):
         mcp = AnodizeMCP("doc")
 
@@ -755,7 +755,7 @@ class Round13ParityTest(unittest.TestCase):
         with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
             f.write(script)
             path = f.name
-        env = dict(os.environ)
+        env = os.environ.copy()
         src = str(Path(__file__).resolve().parent.parent / "src")
         env["PYTHONPATH"] = src + os.pathsep + env.get("PYTHONPATH", "")
         env.setdefault("PATH", "")
@@ -768,10 +768,10 @@ class Round13ParityTest(unittest.TestCase):
 
             self.assertEqual(asyncio.run(main()), "from-path")
         finally:
-            os.unlink(path)
+            Path(path).unlink()
 
 
-class Round14ParityTest(unittest.TestCase):
+class VisibilityControlTest(unittest.TestCase):
     def test_disable_enable_by_names_and_tags(self):
         mcp = AnodizeMCP("vis")
 
@@ -826,7 +826,7 @@ class Round14ParityTest(unittest.TestCase):
             httpd.server_close()
 
 
-class Round15ParityTest(unittest.TestCase):
+class ElicitationSchemaTest(unittest.TestCase):
     def test_elicit_pydantic_response_reconstructed(self):
         try:
             from pydantic import BaseModel
@@ -888,7 +888,7 @@ class Round15ParityTest(unittest.TestCase):
         )
 
 
-class Round16ParityTest(unittest.TestCase):
+class ConstraintEnforcementTest(unittest.TestCase):
     def test_pattern_constraint_advertised_and_enforced(self):
         from typing import Annotated
 

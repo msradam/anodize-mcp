@@ -376,7 +376,7 @@ class InMemoryClientTest(unittest.IsolatedAsyncioTestCase):
 class StdioClientTest(unittest.IsolatedAsyncioTestCase):
     async def test_subprocess_server(self):
         repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        env = dict(os.environ)
+        env = os.environ.copy()
         env["PYTHONPATH"] = os.path.join(repo, "src")
         command = [sys.executable, os.path.join(repo, "examples", "quickstart.py")]
         async with Client(command, env=env) as c:  # type: ignore[arg-type]

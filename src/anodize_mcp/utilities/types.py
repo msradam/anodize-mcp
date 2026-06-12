@@ -21,7 +21,7 @@ def _expanded_path(path: Union[str, Path, None]) -> Optional[Path]:
 
 
 def _require_one_source(path: Any, data: Any) -> None:
-    if path is None and data is None:
+    if path is None is data:
         raise ValueError("Either path or data must be provided")
     if path is not None and data is not None:
         raise ValueError("Only one of path or data can be provided")

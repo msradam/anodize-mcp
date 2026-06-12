@@ -287,7 +287,7 @@ class AsgiUvicornTest(unittest.TestCase):
         reader.start()
         time.sleep(0.3)  # let the stream attach
         with httpx.Client(headers={"Accept": "application/json"}) as c:
-            c.post(base + "/mcp", headers={"Mcp-Session-Id": sid}, json=dict(call_body, id=3))
+            c.post(base + "/mcp", headers={"Mcp-Session-Id": sid}, json=call_body | {"id": 3})
         reader.join(timeout=4)
         self.assertTrue(
             any("progress" in e for e in get_events), f"no progress event in {get_events}"
