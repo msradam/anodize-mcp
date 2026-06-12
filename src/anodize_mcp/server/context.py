@@ -11,11 +11,13 @@ async style (``await ctx.info(...)``). See :mod:`anodize_mcp._deferred`.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import dataclasses
 from typing import TYPE_CHECKING, Any, Optional, Union
 
 from .._deferred import defer
+from ..attrdict import wrap as attr_wrap
 from ..clientfeatures import (
     CreateMessageResult,
     ElicitResult,
@@ -29,6 +31,18 @@ from ..session import Session
 
 if TYPE_CHECKING:
     from .server import AnodizeMCP
+
+
+class _ReadResourceResult(list):
+    """FastMCP's ResourceResult shape over the plain contents list.
+
+    ``.contents`` mirrors FastMCP 3.x; indexing and iteration keep the older
+    list behavior.
+    """
+
+    @property
+    def contents(self) -> _ReadResourceResult:
+        return self
 
 
 @dataclasses.dataclass
@@ -191,8 +205,23 @@ class Context:
     # -- resource access --------------------------------------------------
 
     def read_resource(self, uri: str) -> Any:
-        """Read another resource registered on this server and return its contents."""
-        return defer(self._server.read_resource(uri, self._session))
+        """Read another resource registered on this server and return its contents.
+
+        The result is FastMCP-shaped: ``result.contents[i].content`` carries the
+        body (text or decoded bytes) and ``.mime_type`` the type. It is also a
+        list, so the older ``result[0]["text"]`` access keeps working.
+        """
+        raw = self._server.read_resource(uri, self._session)
+        items = []
+        for item in raw:
+            entry = dict(item)
+            if entry.get("text") is not None:
+                entry.setdefault("content", entry["text"])
+            elif entry.get("blob") is not None:
+                entry.setdefault("content", base64.b64decode(entry["blob"]))
+            entry.setdefault("mime_type", entry.get("mimeType"))
+            items.append(attr_wrap(entry))
+        return defer(_ReadResourceResult(items))
 
     def list_resources(self) -> Any:
         """List the server's registered (static) resources."""

@@ -215,6 +215,45 @@ class InMemoryClientTest(unittest.IsolatedAsyncioTestCase):
                 r = await c.call_tool("ask", {})
                 self.assertEqual(r.text, "accept:thai")
 
+    async def test_ctx_read_resource_is_fastmcp_shaped(self):
+        mcp = AnodizeMCP("rr")
+
+        @mcp.resource("data://greet")
+        def greet() -> str:
+            return "hello-resource"
+
+        @mcp.tool
+        async def reader(ctx: Context) -> str:
+            res = await ctx.read_resource("data://greet")
+            assert res[0]["text"] == "hello-resource"  # older list access
+            return f"{res.contents[0].content}|{res.contents[0].mime_type}"
+
+        async with Client(mcp) as c:
+            r = await c.call_tool("reader", {})
+            self.assertEqual(r.text, "hello-resource|text/plain")
+
+    async def test_lifespan_runs_for_in_memory_client(self):
+        import contextlib as _ctxlib
+
+        events = []
+
+        @_ctxlib.contextmanager
+        def lifespan(server):
+            events.append("enter")
+            yield {"db": "conn42"}
+            events.append("exit")
+
+        mcp = AnodizeMCP("ls", lifespan=lifespan)
+
+        @mcp.tool
+        def show(ctx: Context) -> str:
+            return str(ctx.request_context.lifespan_context)
+
+        async with Client(mcp) as c:
+            r = await c.call_tool("show", {})
+            self.assertEqual(r.text, "{'db': 'conn42'}")
+        self.assertEqual(events, ["enter", "exit"])
+
     async def test_message_handler_sees_notifications(self):
         mcp = build_server()
         seen = []

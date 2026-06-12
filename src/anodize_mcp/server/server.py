@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import inspect
+import threading
 import warnings
 import weakref
 from typing import Any, Callable, Optional, TypeVar
@@ -119,6 +120,8 @@ class AnodizeMCP:
         self._lifespan_state: Any = None
         self._lifespan_cm: Any = None
         self._lifespan_async = False
+        self._lifespan_refs = 0
+        self._lifespan_lock = threading.Lock()
 
     def _check_duplicate(self, kind: str, name: str, registry: Any) -> None:
         if name not in registry:
@@ -1023,6 +1026,32 @@ class AnodizeMCP:
         else:
             self._lifespan_state = manager
         return self._lifespan_state
+
+    def _acquire_lifespan(self) -> bool:
+        """Refcounted lifespan entry for in-memory connections.
+
+        Returns True when this caller owns a reference and must release it.
+        A lifespan already entered by a transport runner (stdio, ASGI) is
+        left alone.
+        """
+        if self.lifespan is None:
+            return False
+        with self._lifespan_lock:
+            if self._lifespan_refs == 0 and (
+                self._lifespan_cm is not None or self._lifespan_state is not None
+            ):
+                return False
+            self._lifespan_refs += 1
+            if self._lifespan_refs == 1:
+                self._enter_lifespan()
+            return True
+
+    def _release_lifespan(self) -> None:
+        with self._lifespan_lock:
+            if self._lifespan_refs > 0:
+                self._lifespan_refs -= 1
+                if self._lifespan_refs == 0:
+                    self._exit_lifespan()
 
     def _exit_lifespan(self) -> None:
         manager = self._lifespan_cm

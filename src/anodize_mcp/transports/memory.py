@@ -36,6 +36,9 @@ def serve_memory(
     """Read client messages from ``inbox``, write server messages to ``outbox``."""
     session = server.new_session(send=lambda m: outbox.put(_jsonsafe(m)))
     session.transport = "memory"
+    # FastMCP runs the lifespan for in-memory connections too; refcounted so
+    # concurrent clients share one entry.
+    owns_lifespan = server._acquire_lifespan()
     executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="anodize-memory")
 
     def process(message: dict[str, Any]) -> None:
@@ -62,4 +65,6 @@ def serve_memory(
     finally:
         session.fail_pending("in-memory transport closed")
         executor.shutdown(wait=False)
+        if owns_lifespan:
+            server._release_lifespan()
         outbox.put(SHUTDOWN)
