@@ -33,6 +33,12 @@ def json_default(obj: Any) -> Any:
         return obj.value
     if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
         return dataclasses.asdict(obj)
+    # A pydantic-style model (the server's own choice) serializes via its own dump.
+    dump = getattr(obj, "model_dump", None)
+    if callable(dump):  # pydantic v2
+        return dump(mode="json")
+    if hasattr(obj, "__fields__") and callable(getattr(obj, "dict", None)):  # pydantic v1
+        return obj.dict()
     return str(obj)
 
 

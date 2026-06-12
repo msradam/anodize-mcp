@@ -51,7 +51,7 @@ from ..schema import (
     output_schema_for,
 )
 from ..session import LOG_LEVELS, Session
-from ..tools.tool import ToolDef
+from ..tools.tool import ToolDef, ToolResult
 from .context import Context
 
 F = TypeVar("F", bound=Callable[..., Any])
@@ -640,6 +640,15 @@ class AnodizeMCP:
         except Exception as exc:  # noqa: BLE001
             detail = "internal error" if self.mask_error_details else f"{type(exc).__name__}: {exc}"
             return self._tool_error(detail)
+
+        if isinstance(value, ToolResult):
+            blocks = normalize_tool_result(value.content)[0] if value.content is not None else []
+            out: dict[str, Any] = {"content": blocks, "isError": False}
+            if value.structured_content is not None:
+                out["structuredContent"] = to_jsonable(value.structured_content)
+            if value.meta is not None:
+                out["_meta"] = value.meta
+            return out
 
         content, _ = normalize_tool_result(value)
         result: dict[str, Any] = {"content": content, "isError": False}

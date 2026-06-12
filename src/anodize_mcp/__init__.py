@@ -75,6 +75,8 @@ from .server.middleware import (
     TimingMiddleware,
     TokenBucketRateLimiter,
 )
+from .tools.tool import ToolResult
+from .utilities.types import File, Image
 
 __version__ = "0.6.0"
 
@@ -94,6 +96,9 @@ __all__ = [
     "ResourceLink",
     "EmbeddedResource",
     "ResourceContents",
+    "Image",
+    "File",
+    "ToolResult",
     "PromptMessage",
     "CreateMessageResult",
     "ElicitResult",

@@ -15,6 +15,19 @@ from ..schema import ParamSpec
 
 
 @dataclass
+class ToolResult:
+    """An explicit tool result: content, structured content, and metadata together.
+
+    Return one from a tool to control all three at once, mirroring FastMCP's
+    ``ToolResult``. ``content`` may be a string, a content block, or a list of them.
+    """
+
+    content: Any = None
+    structured_content: Any = None
+    meta: Any = None
+
+
+@dataclass
 class ToolDef:
     name: str
     handler: Callable[..., Any]

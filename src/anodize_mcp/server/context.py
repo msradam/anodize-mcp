@@ -11,6 +11,7 @@ async style (``await ctx.info(...)``). See :mod:`anodize_mcp._deferred`.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 from typing import TYPE_CHECKING, Any, Optional, Union
 
@@ -217,13 +218,19 @@ class Context:
         max_tokens: int = 1000,
         temperature: Optional[float] = None,
         stop_sequences: Optional[list[str]] = None,
-        model_preferences: Optional[dict[str, Any]] = None,
+        model_preferences: Optional[Any] = None,
+        model: Optional[Any] = None,
         include_context: Optional[str] = None,
+        result_type: Optional[Any] = None,
+        tools: Optional[Any] = None,
         timeout: float = 60.0,
     ) -> CreateMessageResult:
         """Ask the client's LLM to generate a message (``sampling/createMessage``).
 
         ``messages`` may be a string, a single message dict, or a list of either.
+        FastMCP's ``model=``, ``result_type=``, and ``tools=`` are accepted; the
+        result exposes ``.text`` for the caller to parse (anodize does not run the
+        structured parsing itself, which would need pydantic).
         """
         self._require_client_capability("sampling")
         params: dict[str, Any] = {
@@ -236,42 +243,45 @@ class Context:
             params["temperature"] = temperature
         if stop_sequences is not None:
             params["stopSequences"] = stop_sequences
-        if model_preferences is not None:
-            params["modelPreferences"] = model_preferences
+        prefs = model_preferences if model_preferences is not None else model
+        if prefs is not None:
+            params["modelPreferences"] = _normalize_model_preferences(prefs)
         if include_context is not None:
             params["includeContext"] = include_context
+        if tools is not None:
+            params["tools"] = tools
         result = self._session.send_request("sampling/createMessage", params, timeout=timeout)
         return defer(CreateMessageResult.from_dict(result or {}))
 
     def elicit(
         self,
         message: str,
-        schema: Union[dict[str, Any], type],
+        schema: Union[dict[str, Any], type, None] = None,
         *,
+        response_type: Union[dict[str, Any], type, None] = None,
         timeout: float = 60.0,
     ) -> ElicitResult:
         """Ask the user for structured input via the client (``elicitation/create``).
 
-        ``schema`` is a JSON Schema dict or a dataclass describing the requested
-        fields. When a dataclass is given and the user accepts, ``result.data``
-        is an instance of it; otherwise it is the raw dict.
+        ``schema`` (or FastMCP's ``response_type=``) is a JSON Schema dict, a
+        dataclass, a pydantic model, or a scalar type. On accept, ``result.data``
+        is an instance of a dataclass schema, the unwrapped scalar, or the raw dict.
         """
+        schema = response_type if schema is None else schema
+        if schema is None:
+            raise TypeError("elicit() requires a schema or response_type")
         self._require_client_capability("elicitation")
         params = {"message": message, "requestedSchema": elicitation_schema(schema)}
         result = self._session.send_request("elicitation/create", params, timeout=timeout) or {}
         action = result.get("action", "cancel")
         content = result.get("content")
         data: Any = content
-        if (
-            action == "accept"
-            and isinstance(content, dict)
-            and dataclasses.is_dataclass(schema)
-            and isinstance(schema, type)
-        ):
-            try:
-                data = schema(**content)
-            except TypeError:
-                data = content
+        if action == "accept" and isinstance(content, dict):
+            if dataclasses.is_dataclass(schema) and isinstance(schema, type):
+                with contextlib.suppress(TypeError):
+                    data = schema(**content)
+            elif schema in (str, int, float, bool) and "value" in content:
+                data = content["value"]
         return defer(ElicitResult(action=action, data=data))
 
     def list_roots(self, *, timeout: float = 30.0) -> list[Root]:
@@ -279,3 +289,12 @@ class Context:
         self._require_client_capability("roots")
         result = self._session.send_request("roots/list", {}, timeout=timeout) or {}
         return defer([Root(uri=r["uri"], name=r.get("name")) for r in result.get("roots", [])])
+
+
+def _normalize_model_preferences(prefs: Any) -> Any:
+    """Accept a model name, a list of names, or a preferences dict (as FastMCP does)."""
+    if isinstance(prefs, str):
+        return {"hints": [{"name": prefs}]}
+    if isinstance(prefs, (list, tuple)):
+        return {"hints": [{"name": p} if isinstance(p, str) else p for p in prefs]}
+    return prefs

@@ -98,10 +98,20 @@ def normalize_sampling_messages(messages: Any) -> list[dict[str, Any]]:
 def elicitation_schema(requested: Union[dict[str, Any], type]) -> dict[str, Any]:
     """Build the ``requestedSchema`` (a flat object of primitives) for elicitation.
 
-    Accepts a JSON Schema dict directly, or a dataclass to derive one from.
+    Accepts a JSON Schema dict, a dataclass, a pydantic model, or a scalar type
+    (``str``/``int``/``float``/``bool``), matching FastMCP's response types. A
+    scalar is wrapped in a single ``value`` field.
     """
     if isinstance(requested, dict):
         return requested
     if dataclasses.is_dataclass(requested) and isinstance(requested, type):
         return _schema.type_to_schema(requested)
-    raise TypeError("elicit schema must be a dict or a dataclass type")
+    if isinstance(requested, type) and hasattr(requested, "model_json_schema"):
+        return requested.model_json_schema()
+    if requested in (str, int, float, bool):
+        return {
+            "type": "object",
+            "properties": {"value": _schema.type_to_schema(requested)},
+            "required": ["value"],
+        }
+    raise TypeError("elicit schema must be a dict, dataclass, model, or scalar type")

@@ -9,6 +9,7 @@ literal, so the discriminator can never be wrong.
 from __future__ import annotations
 
 import base64
+import contextlib
 import dataclasses
 import json
 from dataclasses import dataclass
@@ -145,6 +146,20 @@ def _is_content_block(value: Any) -> bool:
     )
 
 
+def _model_dump(value: Any) -> Optional[dict[str, Any]]:
+    """JSON-safe dict for a pydantic-style model, or None if ``value`` isn't one."""
+    if isinstance(value, type):
+        return None
+    dump = getattr(value, "model_dump", None)
+    if callable(dump):  # pydantic v2
+        with contextlib.suppress(Exception):
+            return dump(mode="json")
+    if hasattr(value, "__fields__") and callable(getattr(value, "dict", None)):  # pydantic v1
+        with contextlib.suppress(Exception):
+            return value.dict()
+    return None
+
+
 def is_content_value(value: Any) -> bool:
     """True if ``value`` is a content block or a non-empty list of them."""
     if _is_content_block(value):
@@ -183,6 +198,11 @@ def normalize_tool_result(value: Any) -> tuple[list[dict[str, Any]], Optional[di
     if _is_content_block(value):
         return [value.to_dict()], None
 
+    # Image/File helpers (and anything else) that can turn themselves into a block.
+    maker = getattr(value, "to_content_block", None)
+    if callable(maker):
+        return [maker().to_dict()], None
+
     if isinstance(value, list) and value and all(_is_content_block(v) for v in value):
         return [v.to_dict() for v in value], None
 
@@ -195,6 +215,12 @@ def normalize_tool_result(value: Any) -> tuple[list[dict[str, Any]], Optional[di
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         structured = dataclasses.asdict(value)
         return [TextContent(json.dumps(structured, default=json_default)).to_dict()], structured
+
+    # A pydantic-style model returned by a tool becomes structured content.
+    model_structured = _model_dump(value)
+    if model_structured is not None:
+        text = json.dumps(model_structured, default=json_default)
+        return [TextContent(text).to_dict()], model_structured
 
     if isinstance(value, dict):
         return [TextContent(json.dumps(value, default=json_default)).to_dict()], value

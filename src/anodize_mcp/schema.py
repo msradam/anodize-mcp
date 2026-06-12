@@ -9,6 +9,7 @@ deliberately small; it is not a general JSON Schema engine.
 
 from __future__ import annotations
 
+import contextlib
 import contextvars
 import dataclasses
 import datetime as _dt
@@ -238,6 +239,11 @@ def _type_to_schema_inner(tp: Any) -> dict[str, Any]:
     # Dataclasses become nested objects.
     if dataclasses.is_dataclass(tp) and isinstance(tp, type):
         return _dataclass_schema(tp)
+
+    # A pydantic-style model (the server's own choice) carries its own JSON Schema.
+    if isinstance(tp, type) and hasattr(tp, "model_json_schema"):
+        with contextlib.suppress(Exception):
+            return tp.model_json_schema()
 
     # Unknown: leave unconstrained rather than guess wrongly.
     return {}
@@ -576,6 +582,13 @@ def _coerce(value: Any, tp: Any, path: str) -> Any:
 
     if dataclasses.is_dataclass(tp) and isinstance(tp, type):
         return _coerce_dataclass(value, tp, path)
+
+    # Build a pydantic-style model from the dict, using the server's own pydantic.
+    if isinstance(tp, type) and isinstance(value, dict):
+        if hasattr(tp, "model_validate"):  # pydantic v2
+            return tp.model_validate(value)
+        if hasattr(tp, "parse_obj"):  # pydantic v1
+            return tp.parse_obj(value)
 
     return value
 
