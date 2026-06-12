@@ -1,17 +1,24 @@
-# anodize-mcp
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/msradam/anodize-mcp/main/assets/logo-dark.svg">
+    <img alt="AnodizeMCP" src="https://raw.githubusercontent.com/msradam/anodize-mcp/main/assets/logo-light.svg" width="110" height="110">
+  </picture>
+</p>
+
+<h1 align="center">AnodizeMCP</h1>
 
 A lightweight, pure-Python implementation of the [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server framework. **No Rust and no compiled extensions**, so it installs and runs wherever a Rust toolchain cannot.
 
-The official MCP SDK and FastMCP both depend on `pydantic`, which depends on `pydantic-core` (compiled Rust). That dependency has no prebuilt wheel for many targets and cannot be compiled where a Rust toolchain is unavailable or disallowed. anodize fills that gap: it implements the same FastMCP-style API using only the standard library plus pure-Python dependencies. The server class is `AnodizeMCP`, also exported as `FastMCP` so switching later is a one-line import change.
+The official MCP SDK and FastMCP both depend on `pydantic`, which depends on `pydantic-core` (compiled Rust). That dependency has no prebuilt wheel for many targets and cannot be compiled where a Rust toolchain is unavailable or disallowed. AnodizeMCP fills that gap: it implements the same FastMCP-style API using only the standard library plus pure-Python dependencies. The server class is `AnodizeMCP`, also exported as `FastMCP` so switching later is a one-line import change.
 
-The constraint is specifically **Rust**, not dependencies. anodize's only runtime dependency is `uvicorn` (pure Python, no compiled code), which provides a production-grade HTTP server. The MCP core itself is standard library only.
+The constraint is specifically **Rust**, not dependencies. AnodizeMCP's only runtime dependency is `uvicorn` (pure Python, no compiled code), which provides a production-grade HTTP server. The MCP core itself is standard library only.
 
 ## Why it exists
 
-The barrier is specific: a Rust-based package with no prebuilt wheel for your platform and no way to build one because there is no Rust toolchain. `pydantic-core` (under both FastMCP and the official SDK) is the clearest case. anodize and its dependencies contain no Rust and no compiled code, so they install where those cannot:
+The barrier is specific: a Rust-based package with no prebuilt wheel for your platform and no way to build one because there is no Rust toolchain. `pydantic-core` (under both FastMCP and the official SDK) is the clearest case. AnodizeMCP and its dependencies contain no Rust and no compiled code, so they install where those cannot:
 
-- **z/OS** (the sharpest case): IBM's Open Enterprise SDK for Python bundles `cryptography` (3.3.2, pre-Rust) and `numpy`, but there is no `rustc` targeting z/OS, so `pydantic-core` cannot be built or installed. anodize and `uvicorn` install clean.
-- **Linux on IBM Z (s390x), AIX, Solaris/illumos, the BSDs, Cygwin** where prebuilt wheels are often absent (on s390x Linux you can build from source, slowly; anodize skips the build).
+- **z/OS** (the sharpest case): IBM's Open Enterprise SDK for Python bundles `cryptography` (3.3.2, pre-Rust) and `numpy`, but there is no `rustc` targeting z/OS, so `pydantic-core` cannot be built or installed. AnodizeMCP and `uvicorn` install clean.
+- **Linux on IBM Z (s390x), AIX, Solaris/illumos, the BSDs, Cygwin** where prebuilt wheels are often absent (on s390x Linux you can build from source, slowly; AnodizeMCP skips the build).
 - **Exotic or older CPU architectures**: ppc64le, riscv64, ARMv6/v7, mips, sparc.
 - **WebAssembly** (Pyodide, PyScript) and **locked-down or air-gapped build environments** with no compiler, no network, or a no-Rust policy.
 
@@ -20,7 +27,7 @@ The barrier is specific: a Rust-based package with no prebuilt wheel for your pl
 | Official `mcp` SDK | pydantic, anyio, httpx, starlette, uvicorn | pydantic-core (Rust) | no |
 | FastMCP | pydantic + many | pydantic-core (Rust) | no |
 | `pure-mcp` | pydantic, anyio, httpx, jsonschema | pydantic-core (Rust) | no |
-| **anodize** | uvicorn (pure Python) | **none** | **yes** |
+| **AnodizeMCP** | uvicorn (pure Python) | **none** | **yes** |
 
 ## Install
 
@@ -89,7 +96,7 @@ async def summarize(text: str, ctx: Context) -> str:
 ```
 
 To stay portable both directions, write FastMCP's async style: `async def`
-handlers and `await ctx.*`. anodize's `Context` methods are awaitable for this
+handlers and `await ctx.*`. AnodizeMCP's `Context` methods are awaitable for this
 reason (they also work without `await`, as a convenience, but that sync-only
 form does not port back to FastMCP).
 
@@ -105,22 +112,23 @@ FastMCP).
 - `FastMCP(name, instructions=..., version=..., lifespan=..., icons=..., website_url=..., on_duplicate=..., mask_error_details=..., auth=...)`; `@mcp.tool`, `@mcp.resource`, `@mcp.prompt` with `name`/`title`/`description`/`annotations`/`tags`; `add_tool`/`add_resource`/`add_prompt`
 - `@mcp.custom_route(path, methods=...)`, `mcp.add_middleware(...)`, `mcp.list_tools/list_resources/list_prompts/get_tool/get_prompt/call_tool/render_prompt`, `mcp.disable_tool/enable_tool`
 - `ctx: Context` injection; `await ctx.debug/info/notice/warning/error(...)`, `ctx.log(message, level=...)`, `report_progress`, `read_resource`, `list_resources`, `list_prompts`, `get_prompt`, `get_state/set_state/delete_state`, `send_notification`, `sample` (result `.text`), `elicit(message, dataclass)` (result `.action`/`.data`), `list_roots`; `ctx.session_id`/`client_id`/`request_id`/`fastmcp`/`transport`/`request_context.lifespan_context`/`access_token`
-- Parameter types: primitives, `Optional`/`Union`/`Literal`/`Enum`, `list`/`dict`/`set`/`tuple`, `datetime`/`date`/`UUID`/`Decimal`, dataclasses, and constraints via either anodize's `Field` or **`pydantic.Field`/`annotated_types`** (`Annotated[int, Field(ge=0)]` validates)
-- Return types: `str`, numbers, `dict`, `list`, dataclasses, `bytes`, `None`, and content blocks (`TextContent`, `ImageContent`, ...)
+- Parameter types: primitives, `Optional`/`Union`/`Literal`/`Enum`, `list`/`dict`/`set`/`tuple`, `datetime`/`date`/`UUID`/`Decimal`, dataclasses, **`pydantic.BaseModel`** (built via the server's own pydantic), and constraints via either AnodizeMCP's `Field` or **`pydantic.Field`/`annotated_types`** (`Annotated[int, Field(ge=0)]` validates)
+- Return types: `str`, numbers, `dict`, `list`, dataclasses, pydantic models, `bytes`, `None`, content blocks (`TextContent`, `ImageContent`, ...), the `Image`/`File` helpers, and `ToolResult`
 - `mcp.run(transport="stdio"|"http", host=..., port=...)`
+- `fastmcp.Client` in-memory, over stdio, and over Streamable HTTP (`Client("http://host/mcp")`)
 
-### What does not port (use the alternative, or it is unsupported)
+### What is not implemented as of now (use the alternative)
 
-| FastMCP feature | On anodize |
+These are not fundamental limits, just features not built yet.
+
+| FastMCP feature | On AnodizeMCP |
 |---|---|
-| `pydantic.BaseModel` as a tool parameter | Use a `@dataclass` instead (BaseModel params are the one hard break) |
 | `from fastmcp.exceptions import ToolError` | `from anodize_mcp import ToolError` (one import line) |
-| `@mcp.custom_route` handler body | Decorator and `handler(request) -> response` shape match; the request/response objects are anodize's, not Starlette's |
-| OAuth 2.1 server flow / hosted-IdP provider wrappers | Not supported; verify externally-issued tokens with `auth=` instead |
-| `mcp.mount` / `import_server` / `as_proxy` / `from_openapi` | Not supported (server composition and generation) |
-| `@mcp.tool(task=True)` background tasks | Not supported |
-| `fastmcp.Client` | Supported in-memory and over stdio (see Testing); HTTP client transport is not implemented |
-| the `fastmcp` CLI | Not supported |
+| `@mcp.custom_route` handler body | Decorator and `handler(request) -> response` shape match; the request/response objects are AnodizeMCP's, not Starlette's |
+| OAuth 2.1 server flow / hosted-IdP provider wrappers | Not implemented as of now; verify externally-issued tokens with `auth=` instead |
+| `mcp.mount` / `import_server` / `as_proxy` / `from_openapi` | Not implemented as of now (server composition and generation) |
+| `@mcp.tool(task=True)` background tasks | Not implemented as of now |
+| the `fastmcp` CLI | Not implemented as of now |
 | `transport="sse"` (deprecated) | Raises a clear error; use `"http"` |
 
 The other expected difference is the negotiated protocol revision: AnodizeMCP
@@ -130,15 +138,15 @@ newer one.
 ### Conformance against FastMCP's own test suite
 
 As a parity check, FastMCP's tests can be pointed at AnodizeMCP by aliasing
-`fastmcp.FastMCP` and `fastmcp.Client` to the anodize equivalents (pytest loads
+`fastmcp.FastMCP` and `fastmcp.Client` to the AnodizeMCP equivalents (pytest loads
 plugins before test modules, so `from fastmcp import FastMCP` then resolves to
 AnodizeMCP). Run against FastMCP 3.x's `tests/tools`, `tests/resources`, and
 `tests/prompts` with only that alias and the optional `name`, **554 of 606 pass**.
 
 This is the tool/resource/prompt behavioral subset, not FastMCP's full suite
 (which also covers the CLI, OpenAPI generation, telemetry, and other features
-that are out of scope here). The 52 failures fall into three groups: features
-AnodizeMCP does not implement (per-tool `timeout`, the thread-offload API, tool
+not implemented as of now). The 52 failures fall into three groups: features
+AnodizeMCP does not implement yet (per-tool `timeout`, the thread-offload API, tool
 transformation), tests that assert on the official `mcp` SDK result objects
 (AnodizeMCP's client returns dicts), and a small number of edge cases under
 review.
@@ -283,7 +291,7 @@ mcp = AnodizeMCP("demo", auth=JWTVerifier(jwks_uri="https://idp/.well-known/jwks
                                           issuer="https://idp", audience="my-api"))
 ```
 
-The verifier is any object with `verify_token(token: str) -> AccessToken | None` and an optional `required_scopes`, so a custom verifier (LDAP, RACF, a database lookup) drops in. The OAuth 2.1 authorization-server flow and the hosted-IdP provider wrappers are out of scope; point those at your IdP and verify the tokens here.
+The verifier is any object with `verify_token(token: str) -> AccessToken | None` and an optional `required_scopes`, so a custom verifier (LDAP, RACF, a database lookup) drops in. The OAuth 2.1 authorization-server flow and the hosted-IdP provider wrappers are not implemented as of now; point those at your IdP and verify the tokens here.
 
 ## Lifespan
 
@@ -317,7 +325,7 @@ def health(request):
     return {"status": "ok"}
 ```
 
-The decorator and the `handler(request) -> response` shape match FastMCP; the request and response objects are anodize's own (no Starlette dependency).
+The decorator and the `handler(request) -> response` shape match FastMCP; the request and response objects are AnodizeMCP's own (no Starlette dependency).
 
 ## Middleware
 
@@ -398,3 +406,7 @@ The test suite uses only the standard library `unittest`.
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+## Credits
+
+Diode logo by [Eucalyp](https://thenounproject.com/Eucalyp/) from the [Noun Project](https://thenounproject.com/icon/diode-3160468/).
