@@ -19,8 +19,19 @@ can trust it in production. Every change is measured against that promise.
 
 1. No Rust and no compiled extensions, ever, in the package or its required
    dependencies. The only runtime dependency is `uvicorn` (pure Python).
-2. The constraint is Rust, not dependencies. A pure-Python dependency is
-   acceptable if it earns its place; a Rust-backed one is not.
+2. The constraint is Rust, not dependencies. A pure-Python dependency that
+   installs on z/OS is acceptable when it earns its place; a Rust-backed one never
+   is (pydantic-core, the mcp SDK, orjson, rpds-py, modern cryptography builds).
+   When a feature is one FastMCP builds on a pure-Python dependency that is
+   available on z/OS, prefer that same dependency over a divergent reimplementation,
+   to maximize drop-in fidelity. FastMCP's CLI uses typer and click; rich, httpx,
+   and starlette are likewise pure Python and install on z/OS. Pull such a
+   dependency in only with the feature that needs it, never speculatively, and keep
+   the required set minimal. z/OS Python is IBM Open Enterprise SDK for Python (3.9
+   through 3.14); most pure-Python wheels install from PyPI, only cffi, cryptography,
+   ebcdic, numpy, pip, pycparser, setuptools, and six are IBM-supported, and the
+   bundled cryptography is the pre-Rust 3.3.2, so any optional RS256 path must
+   accept that version.
 3. Never `import pydantic` or `import mcp` in the package. When a user's server
    brings pydantic, use it by duck typing (`model_validate`, `model_json_schema`,
    `model_dump`); never require it. See `schema.py`, `content.py`, `protocol.py`.
