@@ -11,6 +11,28 @@ import uuid
 from typing import Any, Optional, Union
 
 
+def _iso_duration(td: _dt.timedelta) -> str:
+    """ISO 8601 duration, the form pydantic serializes timedeltas to."""
+    sign = "-" if td.total_seconds() < 0 else ""
+    td = abs(td)
+    seconds = td.seconds + td.microseconds / 1_000_000
+    hours, rest = divmod(seconds, 3600)
+    minutes, secs = divmod(rest, 60)
+    out = f"{sign}P"
+    if td.days:
+        out += f"{td.days}D"
+    if hours or minutes or secs or not td.days:
+        out += "T"
+        if hours:
+            out += f"{int(hours)}H"
+        if minutes:
+            out += f"{int(minutes)}M"
+        if secs or (not hours and not minutes and not td.days):
+            text = f"{secs:.6f}".rstrip("0").rstrip(".")
+            out += f"{text}S"
+    return out
+
+
 def json_default(obj: Any) -> Any:
     """``json.dumps(default=...)`` hook so no value can crash the encoder.
 
@@ -22,7 +44,11 @@ def json_default(obj: Any) -> Any:
     if isinstance(obj, (bytes, bytearray)):
         return base64.b64encode(bytes(obj)).decode("ascii")
     if isinstance(obj, (_dt.datetime, _dt.date, _dt.time)):
-        return obj.isoformat()
+        # Pydantic writes UTC offsets as Z; match it for byte-level parity.
+        iso = obj.isoformat()
+        return iso[:-6] + "Z" if iso.endswith("+00:00") else iso
+    if isinstance(obj, _dt.timedelta):
+        return _iso_duration(obj)
     if isinstance(obj, decimal.Decimal):
         return float(obj)
     if isinstance(obj, uuid.UUID):

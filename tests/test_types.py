@@ -353,6 +353,122 @@ class Round7ParityTest(unittest.TestCase):
         self.assertGreater(counts["n"], 0)
 
 
+class Round9ParityTest(unittest.TestCase):
+    def test_non_finite_floats_are_errors(self):
+        mcp = AnodizeMCP("nf")
+
+        @mcp.tool
+        def inf_val() -> float:
+            return float("inf")
+
+        async def main():
+            async with Client(mcp) as c:
+                return await c.call_tool("inf_val", {}, raise_on_error=False)
+
+        result = asyncio.run(main())
+        self.assertTrue(result.is_error)
+
+    def test_datetime_serialization_matches_pydantic(self):
+        import datetime as dt
+
+        mcp = AnodizeMCP("dt")
+
+        @mcp.tool
+        def utc_dt() -> dt.datetime:
+            return dt.datetime(2026, 6, 12, 1, 2, 3, tzinfo=dt.timezone.utc)
+
+        @mcp.tool
+        def duration() -> dt.timedelta:
+            return dt.timedelta(days=1, hours=2, seconds=3.5)
+
+        async def main():
+            async with Client(mcp) as c:
+                a = await c.call_tool("utc_dt", {})
+                b = await c.call_tool("duration", {})
+                return a, b
+
+        a, b = asyncio.run(main())
+        self.assertEqual(a.text, '"2026-06-12T01:02:03Z"')
+        self.assertEqual(a.data, "2026-06-12T01:02:03Z")
+        self.assertEqual(b.data, "P1DT2H3.5S")
+
+    def test_prompt_embedded_resource_wire_shape(self):
+        from anodize_mcp import EmbeddedResource
+        from anodize_mcp.prompts.prompt import PromptMessage
+
+        mcp = AnodizeMCP("pe")
+
+        @mcp.prompt
+        def doc() -> PromptMessage:
+            return PromptMessage(
+                role="user",
+                content=EmbeddedResource(uri="data://x", text="body", mimeType="text/plain"),
+            )
+
+        async def main():
+            async with Client(mcp) as c:
+                return await c.get_prompt("doc", {})
+
+        result = asyncio.run(main())
+        content = result["messages"][0]["content"]
+        self.assertEqual(content["type"], "resource")
+        self.assertEqual(content["resource"]["uri"], "data://x")
+        self.assertEqual(content["resource"]["text"], "body")
+
+    def test_basemodel_return_is_unwrapped(self):
+        try:
+            from pydantic import BaseModel
+        except ImportError:
+            self.skipTest("pydantic not installed")
+
+        class Out(BaseModel):
+            a: int
+            b: str
+
+        mcp = AnodizeMCP("bm")
+
+        @mcp.tool
+        def model_out() -> Out:
+            return Out(a=1, b="x")
+
+        async def main():
+            async with Client(mcp) as c:
+                tool = (await c.list_tools())[0]
+                result = await c.call_tool("model_out", {})
+                return tool, result
+
+        tool, result = asyncio.run(main())
+        self.assertNotIn("x-fastmcp-wrap-result", tool["outputSchema"])
+        self.assertEqual(result.structured_content, {"a": 1, "b": "x"})
+
+    def test_recursive_model_defs_hoisted_to_root(self):
+        try:
+            from pydantic import BaseModel
+        except ImportError:
+            self.skipTest("pydantic not installed")
+
+        class Node(BaseModel):
+            name: str
+            children: "list[Node]" = []
+
+        Node.model_rebuild()
+        mcp = AnodizeMCP("rec")
+
+        @mcp.tool
+        def walk(root: Node) -> int:
+            return len(root.children)
+
+        async def main():
+            async with Client(mcp) as c:
+                return (await c.list_tools())[0]
+
+        tool = asyncio.run(main())
+        schema = tool["inputSchema"]
+        self.assertNotIn("$defs", schema["properties"]["root"])
+        if "$ref" in json.dumps(schema["properties"]["root"]):
+            self.assertIn("$defs", schema)
+
+
 class ResourceListTest(unittest.TestCase):
     def test_list_return_is_one_json_document(self):
         mcp = AnodizeMCP("r")

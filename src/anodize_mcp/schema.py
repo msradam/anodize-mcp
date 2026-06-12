@@ -413,6 +413,14 @@ def build_input_schema(specs: list[ParamSpec]) -> dict[str, Any]:
     # FastMCP omits the key when nothing is required.
     if required:
         schema["required"] = required
+    # $refs resolve from the document root, so $defs produced for a property
+    # (recursive pydantic models) must be hoisted there.
+    hoisted: dict[str, Any] = {}
+    for prop in properties.values():
+        if isinstance(prop, dict) and "$defs" in prop:
+            hoisted.update(prop.pop("$defs"))
+    if hoisted:
+        schema["$defs"] = hoisted
     return schema
 
 
@@ -498,6 +506,10 @@ def output_schema_for(return_annotation: Any) -> tuple[Optional[dict[str, Any]],
         return None, False
     if dataclasses.is_dataclass(tp) and isinstance(tp, type):
         return _dataclass_schema(tp), False
+    if isinstance(tp, type) and hasattr(tp, "model_json_schema"):
+        # A pydantic model return is object-shaped: unwrapped, like a dataclass.
+        with contextlib.suppress(Exception):
+            return _inline_refs(tp.model_json_schema()), False
     if _compat.get_origin(tp) is dict:
         return type_to_schema(tp), False
     wrapped = {

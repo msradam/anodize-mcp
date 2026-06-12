@@ -172,9 +172,10 @@ def to_jsonable(value: Any) -> Any:
 
     Round-tripping through :func:`json_default` converts dataclasses, bytes,
     datetimes, etc. (including nested ones) so the structured payload never
-    carries a type the client cannot parse.
+    carries a type the client cannot parse. Non-finite floats are rejected
+    (RFC 8259 has no Infinity/NaN; FastMCP errors on them too).
     """
-    return json.loads(json.dumps(value, default=json_default))
+    return json.loads(json.dumps(value, default=json_default, allow_nan=False))
 
 
 def normalize_tool_result(value: Any) -> tuple[list[dict[str, Any]], Optional[dict[str, Any]]]:
@@ -225,18 +226,23 @@ def normalize_tool_result(value: Any) -> tuple[list[dict[str, Any]], Optional[di
         return [TextContent(_json_text(value)).to_dict()], value
 
     if isinstance(value, (int, float, bool)):
-        return [TextContent(json.dumps(value)).to_dict()], None
+        return [TextContent(json.dumps(value, allow_nan=False)).to_dict()], None
 
     if isinstance(value, (list, tuple, set)):
         # JSON text, as FastMCP serializes sequence returns (not Python repr).
         return [TextContent(_json_text(to_jsonable(value))).to_dict()], None
 
-    return [TextContent(str(value)).to_dict()], None
+    # Anything else serializes as JSON (datetimes as quoted ISO strings, and
+    # so on), the way FastMCP's pydantic fallback does; str() is the last resort.
+    try:
+        return [TextContent(_json_text(to_jsonable(value))).to_dict()], None
+    except (TypeError, ValueError):
+        return [TextContent(str(value)).to_dict()], None
 
 
 def _json_text(value: Any) -> str:
     # Compact separators, matching FastMCP's pydantic_core serialization.
-    return json.dumps(value, default=json_default, separators=(",", ":"))
+    return json.dumps(value, default=json_default, separators=(",", ":"), allow_nan=False)
 
 
 def normalize_resource_result(

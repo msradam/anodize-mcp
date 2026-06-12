@@ -774,6 +774,14 @@ class AnodizeMCP:
             )
             return self._tool_error(detail)
 
+        try:
+            return self._tool_value_to_wire(tool, value)
+        except (TypeError, ValueError) as exc:
+            # An unserializable result (non-finite floats and the like) is a
+            # tool-level error, as FastMCP reports it.
+            return self._tool_error(f"Error calling tool {name!r}: {exc}")
+
+    def _tool_value_to_wire(self, tool: ToolDef, value: Any) -> dict[str, Any]:
         if isinstance(value, ToolResult):
             return self._tool_result_to_wire(value)
 
