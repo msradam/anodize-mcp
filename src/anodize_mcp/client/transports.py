@@ -16,7 +16,7 @@ import urllib.request
 from queue import Queue
 from typing import Any, Iterator, Optional
 
-from ..protocol import json_default
+from ..protocol import json_default, make_error
 from ..transports.memory import SHUTDOWN, _jsonsafe, serve_memory
 
 # ---------------------------------------------------------------------------
@@ -145,26 +145,47 @@ class StreamableHttpTransport:
             headers=headers,
             method="POST",
         )
+
+        # Any failure must resolve the pending request, or the caller waits out
+        # its full timeout for an answer that can never arrive.
+        request_id = message.get("id") if isinstance(message, dict) else None
+
+        def fail(text: str) -> None:
+            if request_id is not None and self._outbox is not None:
+                self._outbox.put(make_error(request_id, -32000, text))
+
         try:
             # A read timeout keeps a misbehaving server from hanging the client.
             resp: Any = urllib.request.urlopen(req, timeout=self._timeout)  # noqa: S310
         except urllib.error.HTTPError as exc:
-            resp = exc  # 4xx/5xx still carry a JSON-RPC error body
-        except OSError:
+            resp = exc  # a 4xx/5xx may still carry a JSON-RPC error body
+        except OSError as exc:
+            fail(f"connection failed: {exc}")
             return
-        with contextlib.suppress(Exception), resp:
-            sid = resp.headers.get("Mcp-Session-Id")
-            if sid:
-                self._session_id = sid
-                self._ensure_sse_stream()
-            if "text/event-stream" in (resp.headers.get("Content-Type") or ""):
-                for msg in _iter_sse(resp):
-                    self._outbox.put(msg)
-            else:
+        with resp:
+            try:
+                status = int(getattr(resp, "status", None) or getattr(resp, "code", 200) or 200)
+                sid = resp.headers.get("Mcp-Session-Id")
+                if sid:
+                    self._session_id = sid
+                    self._ensure_sse_stream()
+                if "text/event-stream" in (resp.headers.get("Content-Type") or ""):
+                    for msg in _iter_sse(resp):
+                        self._outbox.put(msg)
+                    return
                 body = resp.read()
+                parsed: Any = None
                 if body.strip():
                     with contextlib.suppress(ValueError):
-                        self._outbox.put(json.loads(body))
+                        parsed = json.loads(body)
+                if isinstance(parsed, dict) and parsed.get("jsonrpc") == "2.0":
+                    self._outbox.put(parsed)
+                elif status >= 400:
+                    # Not a JSON-RPC reply (e.g. an auth layer's 401); fail fast.
+                    detail = parsed.get("error") if isinstance(parsed, dict) else None
+                    fail(f"HTTP {status}: {detail or 'request failed'}")
+            except Exception as exc:  # noqa: BLE001
+                fail(f"transport error: {exc}")
 
     def _ensure_sse_stream(self) -> None:
         if self._sse_started:
