@@ -338,6 +338,16 @@ class BidirectionalTest(unittest.TestCase):
         resp = request(mcp, session, "tools/call", {"name": "review", "arguments": {}})
         self.assertEqual(resp["error"]["code"], -32600)  # INVALID_REQUEST
 
+    def test_mcp_error_accepts_error_data(self):
+        from anodize_mcp.exceptions import ErrorData
+
+        exc = McpError(ErrorData(code=-32602, message="bad", data={"k": 1}))
+        self.assertEqual(exc.code, -32602)
+        self.assertEqual(exc.message, "bad")
+        self.assertEqual(exc.data, {"k": 1})
+        plain = McpError("oops", code=-32000)
+        self.assertEqual((plain.code, plain.message), (-32000, "oops"))
+
     def test_request_timeout(self):
         mcp = Anodize("b")
         session = mcp.new_session(send=lambda m: None)

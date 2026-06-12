@@ -117,7 +117,14 @@ class Client:
         self._transport.start(self._outbox)
         self._reader_task = asyncio.create_task(self._read_loop())
         if self._auto_initialize:
-            await self._initialize()
+            # __aexit__ never runs when __aenter__ raises; close here or the
+            # transport (and the executor thread reading it) leaks and blocks
+            # event-loop shutdown.
+            try:
+                await self._initialize()
+            except BaseException:
+                await self.close()
+                raise
         return self
 
     async def initialize(self) -> Any:

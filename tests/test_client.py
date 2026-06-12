@@ -3,7 +3,8 @@ import sys
 import unittest
 from dataclasses import dataclass
 
-from anodize_mcp import AnodizeMCP, Client, ClientError, Context
+from anodize_mcp import AnodizeMCP, Client, ClientError, Context, McpError, Middleware
+from anodize_mcp.exceptions import INVALID_PARAMS, ErrorData
 
 
 def build_server(page_size: int = 100) -> AnodizeMCP:
@@ -91,6 +92,23 @@ class InMemoryClientTest(unittest.IsolatedAsyncioTestCase):
                 await c.call_tool("nope", {})
             with self.assertRaises(ClientError):
                 await c.call_tool("add", {"a": "x", "b": 1})
+
+    async def test_failed_initialize_raises_and_closes(self):
+        class RejectInitialize(Middleware):
+            async def on_initialize(self, context, call_next):
+                raise McpError(ErrorData(code=INVALID_PARAMS, message="bad init"))
+
+        server = build_server()
+        server.add_middleware(RejectInitialize())
+        client = Client(server)
+        with self.assertRaises(McpError) as caught:
+            async with client:
+                pass
+        self.assertEqual(caught.exception.error.code, INVALID_PARAMS)
+        self.assertEqual(caught.exception.error.message, "bad init")
+        # The failed entry must release the transport and reader; a leak here
+        # deadlocks event-loop shutdown on the executor join.
+        self.assertFalse(client.is_connected())
 
     async def test_resources_and_prompts(self):
         async with Client(build_server()) as c:

@@ -32,7 +32,13 @@ class McpError(Exception):
     structured JSON-RPC error back to the client.
     """
 
-    def __init__(self, message: str, code: int = INTERNAL_ERROR, data: Any = None):
+    def __init__(self, message: Any, code: int = INTERNAL_ERROR, data: Any = None):
+        # The SDK's signature is McpError(error: ErrorData); accept any
+        # ErrorData-shaped first argument so code written for it ports.
+        if hasattr(message, "code") and hasattr(message, "message"):
+            code = message.code
+            data = getattr(message, "data", None)
+            message = message.message
         super().__init__(message)
         self.code = code
         self.message = message
