@@ -26,14 +26,17 @@ PYTHONPATH=src:conformance uv run --with "fastmcp==3.4.2" --with pytest --with p
 
 Targets the core MCP protocol surface anodize implements: tools, resources,
 prompts, server, client, and middleware. FastMCP 3.x features anodize does not
-claim (OpenAPI generation, OAuth proxy, task queues, server mounting, the CLI,
-provider integrations) are out of scope.
+claim are out of scope: OpenAPI/FastAPI generation (`from_fastapi`), OAuth proxy
+and `as_proxy`/`FastMCPProxy`, task queues (`task=True`), server mounting
+(`mount`), the CLI (`fastmcp run`), provider integrations, and the component
+transforms (`PromptsAsTools`, `ResourcesAsTools`, search). Returning a tool's
+pydantic-model param/result, the `Image`/`File` content helpers, and `ToolResult`
+ARE supported (anodize uses the server's own pydantic when present).
 
 Two categories of FastMCP test fail by design and will not be made to pass:
 
-- Tests that assert `isinstance(x, mcp.types.*)` or coerce pydantic models.
-  anodize returns plain dicts and validates with a stdlib coercer; depending on
-  the `mcp` SDK or pydantic would pull in the Rust toolchain anodize exists to
+- Tests that assert `isinstance(x, mcp.types.*)`. anodize returns plain dicts;
+  depending on the `mcp` SDK would pull in the Rust toolchain anodize exists to
   avoid. Attribute access (`tool.name`, `result.content[0].text`) works on both.
 - Timing- and concurrency-based integration tests, and tests of FastMCP's own
   internal helpers (e.g. `_parse_call_tool_result`).
