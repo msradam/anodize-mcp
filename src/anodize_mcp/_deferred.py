@@ -54,6 +54,9 @@ class Deferred:
             other = other._value
         return bool(self._value == other)
 
+    def __str__(self) -> str:
+        return str(self._value)
+
     def __repr__(self) -> str:
         return repr(self._value)
 
