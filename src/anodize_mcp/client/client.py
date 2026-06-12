@@ -89,6 +89,7 @@ class Client:
         roots: Optional[Union[list[dict[str, Any]], Callable[[], Any]]] = None,
         log_handler: Optional[Callable[[dict[str, Any]], Any]] = None,
         progress_handler: Optional[Callable[[dict[str, Any]], Any]] = None,
+        message_handler: Optional[Callable[[dict[str, Any]], Any]] = None,
         client_info: Optional[dict[str, Any]] = None,
         timeout: Optional[float] = None,
         env: Optional[dict[str, str]] = None,
@@ -101,6 +102,7 @@ class Client:
         self._roots = roots
         self._log_handler = log_handler
         self._progress_handler = progress_handler
+        self._message_handler = message_handler
         self._client_info = client_info or {"name": "anodize-client", "version": "0.4.0"}
         self._timeout = timeout
         self._outbox: Queue[Any] = Queue()
@@ -174,6 +176,10 @@ class Client:
                 logger.exception("error handling incoming message")
 
     async def _dispatch_incoming(self, message: dict[str, Any]) -> None:
+        # FastMCP's message_handler observes every server-to-client message
+        # (notifications and requests) alongside the normal routing.
+        if self._message_handler is not None and message.get("method") is not None:
+            await _call(self._message_handler, _wrap(message))
         method = message.get("method")
         if method is None:
             request_id = message.get("id")

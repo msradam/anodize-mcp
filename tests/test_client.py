@@ -215,6 +215,38 @@ class InMemoryClientTest(unittest.IsolatedAsyncioTestCase):
                 r = await c.call_tool("ask", {})
                 self.assertEqual(r.text, "accept:thai")
 
+    async def test_message_handler_sees_notifications(self):
+        mcp = build_server()
+        seen = []
+
+        async with Client(mcp, message_handler=lambda m: seen.append(m.method)) as c:
+            await c.ping()
+            mcp.remove_tool("boom")
+            await c.ping()
+        self.assertIn("notifications/tools/list_changed", seen)
+
+    async def test_wildcard_template(self):
+        mcp = AnodizeMCP("w")
+
+        @mcp.resource("files://{path*}")
+        def read_path(path: str) -> str:
+            return f"got:{path}"
+
+        async with Client(mcp) as c:
+            contents = await c.read_resource("files://a/b/c.txt")
+            self.assertEqual(contents[0]["text"], "got:a/b/c.txt")
+
+    async def test_bytes_return_has_no_structured_content(self):
+        mcp = AnodizeMCP("b")
+
+        @mcp.tool
+        def raw() -> bytes:
+            return b"\x00\x01"
+
+        async with Client(mcp) as c:
+            r = await c.call_tool("raw", {})
+            self.assertIsNone(r.structured_content)
+
     async def test_elicit_result_accepts_content_keyword(self):
         from anodize_mcp import ElicitResult
 

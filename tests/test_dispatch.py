@@ -125,7 +125,6 @@ class DispatchTest(unittest.TestCase):
         self.assertTrue(resp["result"]["isError"])
 
     def test_non_json_returns_are_serializable(self):
-        import base64
         import datetime
         import json
 
@@ -168,8 +167,9 @@ class DispatchTest(unittest.TestCase):
             },
             session,
         )
-        expected = base64.b64encode(b"\x89PNG").decode("ascii")
-        self.assertEqual(bytes_resp["result"]["structuredContent"], {"result": expected})
+        # bytes are content only, with no structured output, as in FastMCP.
+        self.assertNotIn("structuredContent", bytes_resp["result"])
+        self.assertFalse(bytes_resp["result"]["isError"])
 
     def test_tool_returns_content_blocks(self):
         result = self.call("tools/call", {"name": "blocks", "arguments": {}})["result"]

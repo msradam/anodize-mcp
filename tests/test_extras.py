@@ -156,6 +156,25 @@ class MiddlewareTest(unittest.TestCase):
         self.assertTrue(result["result"]["isError"])
         self.assertEqual(result["result"]["content"][0]["text"], "middleware denied")
 
+    def test_middleware_in_place_contents_mutation_propagates(self):
+        class Upper(Middleware):
+            async def on_read_resource(self, ctx, call_next):
+                result = await call_next(ctx)
+                for item in result.contents:
+                    item["text"] = item["text"].upper()
+                return result
+
+        mcp = AnodizeMCP("up")
+        mcp.add_middleware(Upper())
+
+        @mcp.resource("data://x")
+        def x() -> str:
+            return "abc"
+
+        session, _ = init_session(mcp)
+        resp = request(mcp, session, "resources/read", {"uri": "data://x"})
+        self.assertEqual(resp["result"]["contents"][0]["text"], "ABC")
+
     def test_middleware_can_short_circuit(self):
         class Block(Middleware):
             async def on_call_tool(self, ctx, call_next):

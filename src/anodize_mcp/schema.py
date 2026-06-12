@@ -437,6 +437,9 @@ def output_schema_for(return_annotation: Any) -> tuple[Optional[dict[str, Any]],
     tp, _ = _compat.unwrap_annotated(return_annotation)
     if tp is type(None):
         return None, False
+    if tp is bytes:
+        # FastMCP emits bytes as content only, with no structured output.
+        return None, False
     if dataclasses.is_dataclass(tp) and isinstance(tp, type):
         return _dataclass_schema(tp), False
     if _compat.get_origin(tp) is dict:

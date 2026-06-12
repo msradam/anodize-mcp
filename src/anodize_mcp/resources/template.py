@@ -54,7 +54,8 @@ def compile_uri_template(template: str) -> tuple[re.Pattern[str], list[str]]:
     Supported variable forms:
 
     * ``{name}``      matches a single path segment (no ``/``).
-    * ``{name:path}`` matches greedily, including ``/`` (for file paths).
+    * ``{name*}``     RFC 6570 explode, FastMCP's wildcard: matches across ``/``.
+    * ``{name:path}`` the equivalent Starlette-style spelling.
     """
     names: list[str] = []
     out: list[str] = []
@@ -64,7 +65,9 @@ def compile_uri_template(template: str) -> tuple[re.Pattern[str], list[str]]:
         if ch == "{":
             end = template.index("}", i)
             spec = template[i + 1 : end]
-            if ":" in spec:
+            if spec.endswith("*"):
+                name, modifier = spec[:-1], "path"
+            elif ":" in spec:
                 name, modifier = spec.split(":", 1)
             else:
                 name, modifier = spec, ""
