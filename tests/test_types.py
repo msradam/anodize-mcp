@@ -679,6 +679,98 @@ class Round11ParityTest(unittest.TestCase):
         self.assertEqual(asyncio.run(main()).text, "accept:{}")
 
 
+class Round13ParityTest(unittest.TestCase):
+    def test_returns_only_docstring_kept_in_full(self):
+        mcp = AnodizeMCP("doc")
+
+        @mcp.tool
+        def scenes() -> dict:
+            """Lists scenes, grouped.
+
+            Returns:
+                dict mapping group to scenes.
+            """
+            return {}
+
+        async def main():
+            async with Client(mcp) as c:
+                return (await c.list_tools())[0]
+
+        description = asyncio.run(main())["description"]
+        self.assertIn("Returns:", description)
+
+    def test_typeddict_param_schema_and_validation(self):
+        import sys
+
+        if sys.version_info < (3, 11):
+            self.skipTest("NotRequired requires 3.11")
+        from typing import Annotated, NotRequired, TypedDict
+
+        from anodize_mcp import Field
+
+        class Opts(TypedDict):
+            on: bool
+            bri: NotRequired[Annotated[int, Field(ge=0, le=254)]]
+
+        mcp = AnodizeMCP("td")
+
+        @mcp.tool
+        def set_light(opts: Opts) -> dict:
+            return dict(opts)
+
+        async def main():
+            async with Client(mcp) as c:
+                tool = (await c.list_tools())[0]
+                ok = await c.call_tool("set_light", {"opts": {"on": True, "bri": 100}})
+                bad = await c.call_tool(
+                    "set_light", {"opts": {"on": True, "bri": 500}}, raise_on_error=False
+                )
+                return tool, ok, bad
+
+        tool, ok, bad = asyncio.run(main())
+        prop = tool["inputSchema"]["properties"]["opts"]
+        self.assertEqual(prop["properties"]["bri"]["maximum"], 254)
+        self.assertEqual(prop["required"], ["on"])
+        self.assertEqual(ok.data, {"on": True, "bri": 100})
+        self.assertTrue(bad.is_error)
+
+    def test_client_py_path_target(self):
+        import os
+        import tempfile
+        import textwrap
+
+        script = textwrap.dedent(
+            """
+            from anodize_mcp import AnodizeMCP
+
+            mcp = AnodizeMCP("pathsrv")
+
+            @mcp.tool
+            def hello() -> str:
+                return "from-path"
+
+            mcp.run()
+            """
+        )
+        with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
+            f.write(script)
+            path = f.name
+        env = dict(os.environ)
+        src = str(Path(__file__).resolve().parent.parent / "src")
+        env["PYTHONPATH"] = src + os.pathsep + env.get("PYTHONPATH", "")
+        env.setdefault("PATH", "")
+        try:
+            # Force the subprocess interpreter by symlinking sys.executable? No:
+            # the .py inference uses sys.executable already.
+            async def main():
+                async with Client(path, env=env) as c:
+                    return (await c.call_tool("hello", {})).text
+
+            self.assertEqual(asyncio.run(main()), "from-path")
+        finally:
+            os.unlink(path)
+
+
 class ResourceListTest(unittest.TestCase):
     def test_list_return_is_one_json_document(self):
         mcp = AnodizeMCP("r")

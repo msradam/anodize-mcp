@@ -63,11 +63,28 @@ class Session:
         self._pending: dict[str, _Pending] = {}
         self._pending_lock = threading.Lock()
         self._id_counter = 0
+        self._thread_sink = threading.local()
         self._id_lock = threading.Lock()
 
     # -- outbound messages ------------------------------------------------
 
+    def push_thread_sink(self, sink: Callable[[dict[str, Any]], None]) -> None:
+        """Divert this thread's outbound messages to ``sink``.
+
+        The HTTP POST handler uses this so notifications produced while a
+        request is being handled travel on that request's own SSE response,
+        as FastMCP streams them, rather than racing it on the GET stream.
+        """
+        self._thread_sink.sink = sink
+
+    def pop_thread_sink(self) -> None:
+        self._thread_sink.sink = None
+
     def send_message(self, message: dict[str, Any]) -> None:
+        sink = getattr(self._thread_sink, "sink", None)
+        if sink is not None:
+            sink(message)
+            return
         if self._send is not None:
             self._send(message)
 

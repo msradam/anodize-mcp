@@ -51,6 +51,7 @@ from ..schema import (
     coerce_arguments,
     doc_summary,
     output_schema_for,
+    parse_param_docs,
 )
 from ..session import LOG_LEVELS, Session
 from ..tools.tool import ToolDef, ToolResult
@@ -1150,9 +1151,12 @@ def _find_context_param(func: Callable[..., Any]) -> Optional[str]:
 
 
 def _docstring(func: Callable[..., Any]) -> Optional[str]:
-    # The description is the summary only; an Args/Returns section is parsed
-    # separately into per-parameter descriptions, not repeated here.
-    return doc_summary(inspect.getdoc(func))
+    # FastMCP keeps the whole docstring unless parameter descriptions were
+    # actually extracted from it; only then is the summary used alone.
+    doc = inspect.getdoc(func)
+    if doc and parse_param_docs(doc):
+        return doc_summary(doc)
+    return doc
 
 
 def _return_annotation(func: Callable[..., Any]) -> Any:

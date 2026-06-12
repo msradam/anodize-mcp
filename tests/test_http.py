@@ -50,11 +50,24 @@ class HttpTestBase(unittest.TestCase):
             req.add_header(k, v)
         try:
             resp = urllib.request.urlopen(req, timeout=5)
-            payload = resp.read()
-            return resp.status, dict(resp.headers), (json.loads(payload) if payload else None)
+            status, resp_headers, payload = resp.status, dict(resp.headers), resp.read()
         except urllib.error.HTTPError as e:
-            payload = e.read()
-            return e.code, dict(e.headers), (json.loads(payload) if payload else None)
+            status, resp_headers, payload = e.code, dict(e.headers), e.read()
+        return status, resp_headers, self._parse_body(resp_headers, payload)
+
+    @staticmethod
+    def _parse_body(headers, payload):
+        """Return the JSON-RPC response; for an SSE reply, the last data event."""
+        if not payload:
+            return None
+        if "text/event-stream" in (headers.get("Content-Type") or ""):
+            events = [
+                json.loads(line[5:])
+                for line in payload.decode("utf-8").splitlines()
+                if line.startswith("data:")
+            ]
+            return events[-1] if events else None
+        return json.loads(payload)
 
     def initialize(self):
         status, headers, body = self.post(

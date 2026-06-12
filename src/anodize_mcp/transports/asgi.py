@@ -244,6 +244,16 @@ async def _post(
         http_session = existing
 
     loop = asyncio.get_event_loop()
+    extra = {"Mcp-Session-Id": http_session.id} if is_initialize else None
+
+    # A request whose handling may produce notifications (progress, logging,
+    # server-to-client requests) answers as an SSE stream carrying them in
+    # order ahead of the result, as FastMCP does; a plain-JSON reply would
+    # let trailing notifications race it on the GET stream.
+    if is_request(message) and "text/event-stream" in headers.get("accept", ""):
+        await _post_streaming(server, message, http_session, access, loop, send, extra)
+        return
+
     response = await loop.run_in_executor(
         None, _dispatch, server, message, http_session.core, access
     )
@@ -251,11 +261,52 @@ async def _post(
     if not is_request(message):
         await _send_status(send, 202)
         return
-    extra = {"Mcp-Session-Id": http_session.id} if is_initialize else None
     if response is None:
         await _send_status(send, 202)
     else:
         await _send_json(send, 200, response, extra)
+
+
+async def _post_streaming(
+    server: AnodizeMCP,
+    message: dict[str, Any],
+    http_session: _HttpSession,
+    access: Any,
+    loop: Any,
+    send: Any,
+    extra: dict[str, str] | None,
+) -> None:
+    outbound: queue.Queue[Any] = queue.Queue()
+    core = http_session.core
+
+    def run() -> Any:
+        core.push_thread_sink(outbound.put)
+        try:
+            return _dispatch(server, message, core, access)
+        finally:
+            core.pop_thread_sink()
+            outbound.put(_STREAM_DONE)
+
+    headers = [(b"content-type", b"text/event-stream"), (b"cache-control", b"no-cache")]
+    for key, value in (extra or {}).items():
+        headers.append((key.encode("latin-1"), value.encode("latin-1")))
+    await send({"type": "http.response.start", "status": 200, "headers": headers})
+
+    task = loop.run_in_executor(None, run)
+    while True:
+        item = await loop.run_in_executor(None, outbound.get)
+        if item is _STREAM_DONE:
+            break
+        payload = f"data: {json.dumps(item, ensure_ascii=False, default=json_default)}\n\n"
+        await send({"type": "http.response.body", "body": payload.encode(), "more_body": True})
+    response = await task
+    if response is not None:
+        payload = f"data: {json.dumps(response, ensure_ascii=False, default=json_default)}\n\n"
+        await send({"type": "http.response.body", "body": payload.encode(), "more_body": True})
+    await send({"type": "http.response.body", "body": b"", "more_body": False})
+
+
+_STREAM_DONE = object()
 
 
 async def _get_sse(manager: _Manager, receive: Any, send: Any, headers: dict[str, str]) -> None:

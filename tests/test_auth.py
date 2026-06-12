@@ -121,7 +121,7 @@ class HttpAuthTest(unittest.TestCase):
             f"http://127.0.0.1:{self.port}/mcp", data=json.dumps(body).encode(), method="POST"
         )
         req.add_header("Content-Type", "application/json")
-        req.add_header("Accept", "application/json, text/event-stream")
+        req.add_header("Accept", "application/json")
         if token:
             req.add_header("Authorization", f"Bearer {token}")
         try:

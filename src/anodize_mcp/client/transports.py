@@ -10,9 +10,11 @@ from __future__ import annotations
 import contextlib
 import json
 import subprocess
+import sys
 import threading
 import urllib.error
 import urllib.request
+from pathlib import Path
 from queue import Queue
 from typing import Any, Iterator, Optional
 
@@ -225,6 +227,11 @@ def _make_transport(target: Any, env: Optional[dict[str, str]]) -> Any:
         return StreamableHttpTransport(target)
     if hasattr(target, "handle_message") and hasattr(target, "new_session"):
         return FastMCPTransport(target)
+    # A .py/.js script path launches a stdio subprocess, as FastMCP infers.
+    if isinstance(target, (str, Path)) and str(target).endswith((".py", ".js")):
+        path = str(target)
+        runner = [sys.executable] if path.endswith(".py") else ["node"]
+        return _StdioTransport([*runner, path], env=env)
     if isinstance(target, (list, tuple)):
         return _StdioTransport([str(x) for x in target], env=env)
     if hasattr(target, "start") and hasattr(target, "send") and hasattr(target, "close"):

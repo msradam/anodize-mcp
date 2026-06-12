@@ -253,6 +253,10 @@ def _type_to_schema_inner(tp: Any) -> dict[str, Any]:
     if dataclasses.is_dataclass(tp) and isinstance(tp, type):
         return _dataclass_schema(tp)
 
+    # TypedDicts become nested objects with their declared keys.
+    if _is_typeddict(tp):
+        return _typeddict_schema(tp)
+
     # A pydantic-style model (the server's own choice) carries its own JSON
     # Schema; FastMCP inlines $refs and prunes titles, so match that.
     if isinstance(tp, type) and hasattr(tp, "model_json_schema"):
@@ -313,6 +317,46 @@ def _json_type_name(value: Any) -> Optional[str]:
     if isinstance(value, str):
         return "string"
     return None
+
+
+def _is_typeddict(tp: Any) -> bool:
+    return (
+        isinstance(tp, type)
+        and issubclass(tp, dict)
+        and hasattr(tp, "__required_keys__")
+        and hasattr(tp, "__annotations__")
+    )
+
+
+def _unwrap_required(annotation: Any) -> Any:
+    """Strip typing.Required/NotRequired wrappers (requiredness comes from
+    ``__required_keys__``)."""
+    origin = _compat.get_origin(annotation)
+    if origin is not None and getattr(origin, "__name__", "") in ("Required", "NotRequired"):
+        return _compat.get_args(annotation)[0]
+    # On some versions the wrapper itself is the special form.
+    name = getattr(getattr(annotation, "__origin__", None), "_name", None) or getattr(
+        annotation, "_name", None
+    )
+    if name in ("Required", "NotRequired"):
+        args = _compat.get_args(annotation)
+        if args:
+            return args[0]
+    return annotation
+
+
+def _typeddict_hints(tp: type) -> dict[str, Any]:
+    hints = _compat.get_type_hints(tp)
+    return {k: _unwrap_required(v) for k, v in hints.items()}
+
+
+def _typeddict_schema(tp: type) -> dict[str, Any]:
+    required = sorted(getattr(tp, "__required_keys__", frozenset()))
+    properties = {name: type_to_schema(hint) for name, hint in _typeddict_hints(tp).items()}
+    schema: dict[str, Any] = {"type": "object", "properties": properties}
+    if required:
+        schema["required"] = required
+    return schema
 
 
 def _dataclass_schema(tp: type) -> dict[str, Any]:
@@ -568,7 +612,13 @@ def _coerce_arguments(specs: list[ParamSpec], arguments: dict[str, Any]) -> dict
 
 
 def _coerce(value: Any, tp: Any, path: str) -> Any:
-    tp, _ = _compat.unwrap_annotated(tp)
+    tp, metadata = _compat.unwrap_annotated(tp)
+    if metadata:
+        # Annotated constraints on nested values (TypedDict keys, list items)
+        # are enforced here; top-level parameters check theirs via ParamSpec.
+        coerced = _coerce(value, tp, path)
+        _check_constraints(coerced, _field_from_metadata(metadata), path=path)
+        return coerced
 
     if tp is Any or tp is inspect.Parameter.empty:
         return value
@@ -663,6 +713,17 @@ def _coerce(value: Any, tp: Any, path: str) -> Any:
 
     if dataclasses.is_dataclass(tp) and isinstance(tp, type):
         return _coerce_dataclass(value, tp, path)
+
+    if _is_typeddict(tp):
+        if not isinstance(value, dict):
+            raise InvalidParams(f"{path}: invalid, expected object")
+        hints = _typeddict_hints(tp)
+        for key in getattr(tp, "__required_keys__", frozenset()):
+            if key not in value:
+                raise InvalidParams(f"{path}.{key}: missing required key")
+        return {
+            k: _coerce(v, hints[k], f"{path}.{k}") if k in hints else v for k, v in value.items()
+        }
 
     # Build a pydantic-style model from the dict, using the server's own pydantic.
     if isinstance(tp, type) and isinstance(value, dict):
