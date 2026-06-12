@@ -323,6 +323,10 @@ class Context:
             if dataclasses.is_dataclass(schema) and isinstance(schema, type):
                 with contextlib.suppress(TypeError):
                     data = schema(**content)
+            elif isinstance(schema, type) and hasattr(schema, "model_validate"):
+                # A pydantic response_type reconstructs the instance, as FastMCP does.
+                with contextlib.suppress(Exception):
+                    data = schema.model_validate(content)
             elif schema in (str, int, float, bool) and "value" in content:
                 data = content["value"]
         elif action == "accept" and schema is None and data is None:

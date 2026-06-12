@@ -319,6 +319,12 @@ def _json_type_name(value: Any) -> Optional[str]:
     return None
 
 
+def _is_content_block_type(tp: type) -> bool:
+    from .content import ContentBlock
+
+    return tp in getattr(ContentBlock, "__args__", ())
+
+
 def _is_typeddict(tp: Any) -> bool:
     return (
         isinstance(tp, type)
@@ -550,6 +556,14 @@ def output_schema_for(return_annotation: Any) -> tuple[Optional[dict[str, Any]],
     if isinstance(tp, type) and tp.__name__ == "ToolResult":
         # A ToolResult carries its own content and structured payload.
         return None, False
+    if _compat.get_origin(tp) in (list, tuple, set, frozenset):
+        item = next(iter(_compat.get_args(tp)), None)
+        if isinstance(item, type) and (
+            hasattr(item, "to_content_block") or _is_content_block_type(item)
+        ):
+            # A sequence of content blocks is content, not structured output;
+            # FastMCP suppresses the schema here too.
+            return None, False
     if dataclasses.is_dataclass(tp) and isinstance(tp, type):
         return _dataclass_schema(tp), False
     if isinstance(tp, type) and hasattr(tp, "model_json_schema"):

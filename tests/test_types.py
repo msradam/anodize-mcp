@@ -826,6 +826,68 @@ class Round14ParityTest(unittest.TestCase):
             httpd.server_close()
 
 
+class Round15ParityTest(unittest.TestCase):
+    def test_elicit_pydantic_response_reconstructed(self):
+        try:
+            from pydantic import BaseModel
+        except ImportError:
+            self.skipTest("pydantic not installed")
+
+        from anodize_mcp import Context
+
+        class Survey(BaseModel):
+            nickname: str
+            age: int
+
+        mcp = AnodizeMCP("epm")
+
+        @mcp.tool
+        async def ask(ctx: Context) -> str:
+            r = await ctx.elicit("who?", response_type=Survey)
+            return f"{r.data.nickname}:{r.data.age}"
+
+        async def handler(message, response_type, params, context):
+            return {"nickname": "Zo", "age": 30}
+
+        async def main():
+            async with Client(mcp, elicitation_handler=handler) as c:
+                return await c.call_tool("ask", {})
+
+        self.assertEqual(asyncio.run(main()).text, "Zo:30")
+
+    def test_content_block_returns_and_output_schema(self):
+        from anodize_mcp import ResourceLink
+
+        mcp = AnodizeMCP("rl")
+
+        @mcp.tool
+        def typed_links() -> list[ResourceLink]:
+            return [ResourceLink(uri="data://a", name="a")]
+
+        @mcp.tool
+        def bare_links() -> list:
+            return [ResourceLink(uri="data://b", name="b")]
+
+        async def main():
+            async with Client(mcp) as c:
+                tools = {t["name"]: t for t in await c.list_tools()}
+                typed = await c.call_tool("typed_links", {})
+                bare = await c.call_tool("bare_links", {})
+                return tools, typed, bare
+
+        tools, typed, bare = asyncio.run(main())
+        # list[ResourceLink] suppresses the schema entirely, as FastMCP does.
+        self.assertNotIn("outputSchema", tools["typed_links"])
+        self.assertIsNone(typed.structured_content)
+        # A bare list annotation advertises a schema, so structured content
+        # must be present (the serialized blocks), per the MCP spec.
+        self.assertIn("outputSchema", tools["bare_links"])
+        self.assertEqual(
+            bare.structured_content["result"][0]["uri"],
+            "data://b",
+        )
+
+
 class ResourceListTest(unittest.TestCase):
     def test_list_return_is_one_json_document(self):
         mcp = AnodizeMCP("r")

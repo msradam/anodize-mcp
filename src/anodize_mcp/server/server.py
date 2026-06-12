@@ -846,8 +846,10 @@ class AnodizeMCP:
 
         content, auto_structured = normalize_tool_result(value)
         result: dict[str, Any] = {"content": content, "isError": False}
-        if tool.output_schema is not None and value is not None and not is_content_value(value):
-            payload = to_jsonable(value)
+        if tool.output_schema is not None and value is not None:
+            # An advertised outputSchema obliges a conforming structuredContent
+            # (MCP spec MUST); content-block values serialize their wire dicts.
+            payload = content if is_content_value(value) else to_jsonable(value)
             if tool.wrap_output:
                 result["structuredContent"] = {"result": payload}
                 # Mark the synthetic wrapper so the client unwraps .data back to
