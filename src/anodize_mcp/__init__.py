@@ -76,7 +76,7 @@ from .server.middleware import (
     TokenBucketRateLimiter,
 )
 from .tools.tool import ToolResult
-from .utilities.types import File, Image
+from .utilities.types import Audio, File, Image
 
 __version__ = "0.6.0"
 
@@ -97,6 +97,7 @@ __all__ = [
     "EmbeddedResource",
     "ResourceContents",
     "Image",
+    "Audio",
     "File",
     "ToolResult",
     "PromptMessage",

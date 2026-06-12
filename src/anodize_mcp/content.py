@@ -237,11 +237,10 @@ def normalize_resource_result(
     """Turn a resource handler's return value into a ``contents`` array."""
     if isinstance(value, ResourceContents):
         return [value.to_dict()]
-    if isinstance(value, list):
-        out: list[dict[str, Any]] = []
-        for item in value:
-            out.extend(normalize_resource_result(uri, item, mime_type))
-        return out
+    # Only a list of explicit ResourceContents means multiple entries; any
+    # other list is one JSON document, matching FastMCP.
+    if isinstance(value, list) and value and all(isinstance(v, ResourceContents) for v in value):
+        return [v.to_dict() for v in value]
     if isinstance(value, str):
         return [ResourceContents(uri=uri, text=value, mimeType=mime_type or "text/plain").to_dict()]
     if isinstance(value, bytes):

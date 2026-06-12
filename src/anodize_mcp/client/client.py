@@ -18,6 +18,7 @@ import asyncio
 import contextlib
 import dataclasses
 import inspect
+import json
 import logging
 import warnings
 from queue import Queue
@@ -27,6 +28,7 @@ from ..attrdict import wrap as _wrap
 from ..exceptions import INTERNAL_ERROR, McpError
 from ..protocol import (
     LATEST_PROTOCOL_VERSION,
+    json_default,
     make_error,
     make_notification,
     make_request,
@@ -400,12 +402,16 @@ class Client:
         self, name: str, arguments: Optional[dict[str, Any]] = None
     ) -> dict[str, Any]:
         return _wrap(
-            await self._request("prompts/get", {"name": name, "arguments": arguments or {}})
+            await self._request(
+                "prompts/get", {"name": name, "arguments": _stringify_args(arguments)}
+            )
         )
 
     async def get_prompt_mcp(self, name: str, arguments: Optional[dict[str, Any]] = None) -> Any:
         return _wrap(
-            await self._request("prompts/get", {"name": name, "arguments": arguments or {}})
+            await self._request(
+                "prompts/get", {"name": name, "arguments": _stringify_args(arguments)}
+            )
         )
 
     async def complete(
@@ -422,6 +428,14 @@ class Client:
 
     async def set_logging_level(self, level: str) -> None:
         await self._request("logging/setLevel", {"level": level})
+
+
+def _stringify_args(arguments: Optional[dict[str, Any]]) -> dict[str, str]:
+    """JSON-stringify non-string prompt arguments; MCP carries them as strings."""
+    return {
+        k: v if isinstance(v, str) else json.dumps(v, default=json_default)
+        for k, v in (arguments or {}).items()
+    }
 
 
 async def _call(handler: Callable[..., Any], params: dict[str, Any]) -> Any:

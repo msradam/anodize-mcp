@@ -179,6 +179,11 @@ class AnodizeMCP:
         meta: Optional[dict[str, Any]] = None,
     ) -> Callable[[F], F]:
         """Register a function as a resource or, if ``uri`` has ``{vars}``, a template."""
+        if callable(uri):
+            # Bare @mcp.resource swallows the function silently; FastMCP raises.
+            raise TypeError(
+                "The @resource decorator requires a URI: use @mcp.resource('uri://...')"
+            )
 
         def decorator(func: F) -> F:
             context_param = _find_context_param(func)
@@ -643,7 +648,7 @@ class AnodizeMCP:
 
         if isinstance(value, ToolResult):
             blocks = normalize_tool_result(value.content)[0] if value.content is not None else []
-            out: dict[str, Any] = {"content": blocks, "isError": False}
+            out: dict[str, Any] = {"content": blocks, "isError": value.is_error}
             if value.structured_content is not None:
                 out["structuredContent"] = to_jsonable(value.structured_content)
             if value.meta is not None:

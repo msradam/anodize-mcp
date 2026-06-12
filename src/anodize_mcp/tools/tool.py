@@ -7,6 +7,7 @@ equivalent, with the JSON Schema produced by anodize's stdlib schema generator
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
@@ -19,12 +20,24 @@ class ToolResult:
     """An explicit tool result: content, structured content, and metadata together.
 
     Return one from a tool to control all three at once, mirroring FastMCP's
-    ``ToolResult``. ``content`` may be a string, a content block, or a list of them.
+    ``ToolResult``. ``content`` may be a string, a content block, or a list of
+    them. At least one of ``content`` and ``structured_content`` is required;
+    a structured-only result backfills ``content`` with the JSON text, as
+    FastMCP does, so text-only clients still see output.
     """
 
     content: Any = None
     structured_content: Any = None
     meta: Any = None
+    is_error: bool = False
+
+    def __post_init__(self) -> None:
+        if self.content is None and self.structured_content is None:
+            raise ValueError("Either content or structured_content must be provided")
+        if self.content is None:
+            from ..content import to_jsonable
+
+            self.content = json.dumps(to_jsonable(self.structured_content))
 
 
 @dataclass
