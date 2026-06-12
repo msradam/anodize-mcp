@@ -219,8 +219,10 @@ class AnodizeMCP:
         def decorator(func: F) -> F:
             context_param = _find_context_param(func)
             res_name: str = name if name is not None else getattr(func, "__name__", "resource")
-            desc = description or _docstring(func)
             if "{" in uri:
+                # Templates have no per-parameter description slot, so FastMCP
+                # keeps the whole docstring (Args section included).
+                desc = description or inspect.getdoc(func)
                 pattern, var_names = compile_uri_template(uri)
                 self._templates.append(
                     ResourceTemplateDef(
@@ -247,7 +249,7 @@ class AnodizeMCP:
                     handler=func,
                     name=res_name,
                     title=title,
-                    description=desc,
+                    description=description or _docstring(func),
                     mime_type=mime_type,
                     size=size,
                     annotations=_normalize_annotations(annotations),

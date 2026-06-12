@@ -37,6 +37,9 @@ class FastMCPTransport:
         self._inbox: Queue[Any] = Queue()
 
     def start(self, outbox: Queue[Any]) -> None:
+        # A fresh inbox per connection: a second close() after shutdown would
+        # otherwise leave a stale SHUTDOWN for the next connection to read.
+        self._inbox = Queue()
         threading.Thread(
             target=serve_memory, args=(self._server, self._inbox, outbox), daemon=True
         ).start()
@@ -124,6 +127,10 @@ class StreamableHttpTransport:
 
     def start(self, outbox: Queue[Any]) -> None:
         self._outbox = outbox
+        # Allow restart after close (Client re-entered).
+        self._closed = False
+        self._sse_started = False
+        self._session_id = None
 
     def send(self, message: dict[str, Any]) -> None:
         threading.Thread(target=self._post, args=(message,), daemon=True).start()

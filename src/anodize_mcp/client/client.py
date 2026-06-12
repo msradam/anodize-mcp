@@ -124,6 +124,11 @@ class Client:
         if self._entered > 1:
             return self
         self._loop = asyncio.get_event_loop()
+        # A fresh outbox and handshake state allow re-entering after close,
+        # as FastMCP's client does; a stale SHUTDOWN must not leak in.
+        self._outbox = Queue()
+        self._pending.clear()
+        self.initialize_result = None
         self._transport.start(self._outbox)
         self._reader_task = asyncio.create_task(self._read_loop())
         if self._auto_initialize:

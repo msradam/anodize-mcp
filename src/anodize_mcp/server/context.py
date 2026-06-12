@@ -195,7 +195,9 @@ class Context:
 
     # -- per-request/session state ----------------------------------------
 
-    def set_state(self, key: str, value: Any) -> Any:
+    def set_state(self, key: str, value: Any, *, serializable: bool = True) -> Any:
+        # serializable=False is FastMCP's marker for connection-like values;
+        # anodize stores any value either way, so the flag is accepted as-is.
         self._session.state[key] = value
         return defer(None)
 
@@ -323,6 +325,9 @@ class Context:
                     data = schema(**content)
             elif schema in (str, int, float, bool) and "value" in content:
                 data = content["value"]
+        elif action == "accept" and schema is None and data is None:
+            # FastMCP's schema-less confirmation accepts with empty data.
+            data = {}
         return defer(ElicitResult(action=action, data=data))
 
     def list_roots(self, *, timeout: float = 30.0) -> list[Root]:

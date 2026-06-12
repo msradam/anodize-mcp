@@ -592,6 +592,93 @@ class Round10ParityTest(unittest.TestCase):
         self.assertEqual(asyncio.run(main()).text, "accept")
 
 
+class Round11ParityTest(unittest.TestCase):
+    def test_template_description_keeps_args_section(self):
+        mcp = AnodizeMCP("td")
+
+        @mcp.resource("doc://chapter/{n}")
+        def chapter(n: int) -> str:
+            """A chapter of the manual.
+
+            Args:
+                n: Chapter number, one-based.
+            """
+            return f"chapter {n}"
+
+        async def main():
+            async with Client(mcp) as c:
+                return (await c.list_resource_templates())[0]
+
+        template = asyncio.run(main())
+        self.assertIn("Args:", template["description"])
+        self.assertIn("Chapter number", template["description"])
+
+    def test_annotations_title_fallback(self):
+        mcp = AnodizeMCP("at")
+
+        @mcp.tool(annotations={"title": "Ann Title"})
+        def t() -> str:
+            return "x"
+
+        async def main():
+            async with Client(mcp) as c:
+                return (await c.list_tools())[0]
+
+        self.assertEqual(asyncio.run(main())["title"], "Ann Title")
+
+    def test_set_state_serializable_kwarg(self):
+        from anodize_mcp import Context
+
+        mcp = AnodizeMCP("ss")
+
+        @mcp.tool
+        async def stash(ctx: Context) -> str:
+            await ctx.set_state("conn", object(), serializable=False)
+            return "ok" if await ctx.get_state("conn") is not None else "missing"
+
+        async def main():
+            async with Client(mcp) as c:
+                return await c.call_tool("stash", {})
+
+        self.assertEqual(asyncio.run(main()).text, "ok")
+
+    def test_client_reusable_after_close(self):
+        mcp = AnodizeMCP("ru")
+
+        @mcp.tool
+        def t() -> str:
+            return "x"
+
+        async def main():
+            client = Client(mcp)
+            async with client as c:
+                await c.ping()
+            await client.close()  # double close is harmless
+            async with client as c:
+                return (await c.call_tool("t", {})).text
+
+        self.assertEqual(asyncio.run(main()), "x")
+
+    def test_schema_less_elicit_accept_data_is_empty_dict(self):
+        from anodize_mcp import Context
+
+        mcp = AnodizeMCP("ed")
+
+        @mcp.tool
+        async def confirm(ctx: Context) -> str:
+            r = await ctx.elicit("Proceed?")
+            return f"{r.action}:{r.data!r}"
+
+        async def handler(message, response_type, params, context):
+            return None
+
+        async def main():
+            async with Client(mcp, elicitation_handler=handler) as c:
+                return await c.call_tool("confirm", {})
+
+        self.assertEqual(asyncio.run(main()).text, "accept:{}")
+
+
 class ResourceListTest(unittest.TestCase):
     def test_list_return_is_one_json_document(self):
         mcp = AnodizeMCP("r")

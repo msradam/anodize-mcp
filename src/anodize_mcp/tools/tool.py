@@ -57,8 +57,15 @@ class ToolDef:
 
     def describe(self) -> dict[str, Any]:
         out: dict[str, Any] = {"name": self.name, "inputSchema": self.input_schema}
-        if self.title is not None:
-            out["title"] = self.title
+        # FastMCP falls back to annotations.title when no explicit title.
+        title = self.title
+        if title is None and self.annotations:
+            if isinstance(self.annotations, dict):
+                title = self.annotations.get("title")
+            else:
+                title = getattr(self.annotations, "title", None)
+        if title is not None:
+            out["title"] = title
         if self.description is not None:
             out["description"] = self.description
         if self.output_schema is not None:
