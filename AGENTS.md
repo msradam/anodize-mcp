@@ -53,7 +53,7 @@ uvx mypy
 PYTHONPATH=src uv run --no-project --with uvicorn --with httpx python -m unittest discover -s tests
 ```
 
-Today this is 155 unittest tests, ruff clean, mypy clean on 41 source files.
+Today this is 183 unittest tests, ruff clean, mypy clean on 41 source files.
 Spot-check the matrix ends, 3.9 and 3.14, since most regressions surface there:
 
 ```sh
@@ -86,7 +86,7 @@ Two figures to hold:
 - Green gate (CI-enforced, must never regress): the six FastMCP test files that
   pass in full, 169 tests. Listed in `.github/workflows/ci.yml` and
   `conformance/README.md`.
-- Broader core suite: 583 of 762 (77%) on the pinned file set recorded in
+- Broader core suite: 595 of 762 (78%) on the pinned file set recorded in
   `conformance/README.md` (tools/tool, resources, prompts, server/middleware,
   test_server.py, client/client, with the documented filter and a 30s per-test
   timeout). Raising this number, without regressing the green gate, is the main

@@ -72,7 +72,7 @@ PYTHONPATH=src:conformance uv run --no-project --python 3.12 \
   /tmp/fastmcp-src/tests/server/test_server.py /tmp/fastmcp-src/tests/client/client
 ```
 
-The current figure on that set is 583 of 762 (77%); 59 further tests are
+The current figure on that set is 595 of 762 (78%); 59 further tests are
 deselected by the `-k` filter. The remaining failures are dominated by:
 
 - The two out-of-scope categories above (`isinstance(x, mcp.types.*)`, pydantic

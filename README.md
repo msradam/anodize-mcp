@@ -113,7 +113,7 @@ FastMCP).
 - `@mcp.custom_route(path, methods=...)`, `mcp.add_middleware(...)`, `mcp.list_tools/list_resources/list_prompts/get_tool/get_prompt/call_tool/render_prompt`, `mcp.disable_tool/enable_tool`
 - `ctx: Context` injection; `await ctx.debug/info/notice/warning/error(...)`, `ctx.log(message, level=...)`, `report_progress`, `read_resource`, `list_resources`, `list_prompts`, `get_prompt`, `get_state/set_state/delete_state`, `send_notification`, `sample` (result `.text`), `elicit(message, dataclass)` (result `.action`/`.data`), `list_roots`; `ctx.session_id`/`client_id`/`request_id`/`fastmcp`/`transport`/`request_context.lifespan_context`/`access_token`
 - Parameter types: primitives, `Optional`/`Union`/`Literal`/`Enum`, `list`/`dict`/`set`/`tuple`, `datetime`/`date`/`UUID`/`Decimal`, dataclasses, **`pydantic.BaseModel`** (built via the server's own pydantic), and constraints via either AnodizeMCP's `Field` or **`pydantic.Field`/`annotated_types`** (`Annotated[int, Field(ge=0)]` validates)
-- Return types: `str`, numbers, `dict`, `list`, dataclasses, pydantic models, `bytes`, `None`, content blocks (`TextContent`, `ImageContent`, ...), the `Image`/`File` helpers, and `ToolResult`
+- Return types: `str`, numbers, `dict`, `list`, dataclasses, pydantic models, `bytes`, `None`, content blocks (`TextContent`, `ImageContent`, ...), the `Image`/`Audio`/`File` helpers, and `ToolResult` (including `is_error`)
 - `mcp.run(transport="stdio"|"http", host=..., port=...)`
 - `fastmcp.Client` in-memory, over stdio, and over Streamable HTTP (`Client("http://host/mcp")`)
 
@@ -128,6 +128,8 @@ These are not fundamental limits, just features not built yet.
 | OAuth 2.1 server flow / hosted-IdP provider wrappers | Not implemented as of now; verify externally-issued tokens with `auth=` instead |
 | `mcp.mount` / `import_server` / `as_proxy` / `from_openapi` | Not implemented as of now (server composition and generation) |
 | `@mcp.tool(task=True)` background tasks | Not implemented as of now |
+| FastMCP Apps (`FastMCPApp`, `@mcp.tool(app=...)`, `fastmcp.apps`) | Not implemented as of now |
+| `fastmcp.settings` (global settings object) | Not implemented as of now |
 | the `fastmcp` CLI | Not implemented as of now |
 | `transport="sse"` (deprecated) | Raises a clear error; use `"http"` |
 
@@ -184,7 +186,7 @@ def review(code: str, ctx: Context) -> str:
 
 Context provides:
 
-- Logging: `ctx.debug/info/notice/warning/error(...)`. The default level is `info`; the client narrows it with `logging/setLevel`.
+- Logging: `ctx.debug/info/notice/warning/error(...)`. Every level is forwarded until the client narrows it with `logging/setLevel`.
 - Progress: `ctx.report_progress(progress, total=..., message=...)`.
 - Reading resources: `ctx.read_resource(uri)`.
 - Sampling: `ctx.sample(messages, system_prompt=..., max_tokens=...)` asks the client's LLM. `messages` is a string, a single message dict, or a list of either.
@@ -369,6 +371,8 @@ asyncio.run(main())
 
 The client has `list_tools`, `call_tool`, `list_resources`, `read_resource`, `list_resource_templates`, `list_prompts`, `get_prompt`, `complete`, and `ping`, and follows pagination automatically. Pass `sampling_handler`, `elicitation_handler`, and `roots` to answer the server's `ctx.sample`/`ctx.elicit`/`ctx.list_roots` calls; the client advertises the matching capability and the round-trip runs in process.
 
+Handlers accept either convention: AnodizeMCP's single params dict, or FastMCP's signatures (`sampling_handler(messages, params, context)`, `elicitation_handler(message, response_type, params, context)`, `progress_handler(progress, total, message)`), chosen by arity. An elicitation handler may return a dict, a dataclass, or a pydantic model (treated as an accept, as FastMCP does), a bare action string (`"accept"`/`"decline"`/`"cancel"`), or a raw `{"action": ..., "content": ...}` dict.
+
 ```python
 async with Client(mcp, sampling_handler=lambda params: "the model reply") as client:
     result = await client.call_tool("summarize", {"text": "..."})
@@ -385,13 +389,15 @@ mcp.notify_resource_updated(uri)   # to clients subscribed to that uri
 
 ## Pagination
 
-List endpoints page automatically when a registry exceeds `page_size`:
+List endpoints return everything by default, as FastMCP's do. Pass `page_size`
+(or FastMCP's `list_page_size`) to opt in to paging:
 
 ```python
 mcp = AnodizeMCP("demo", page_size=100)
 ```
 
-Clients receive a `nextCursor` and echo it back. The cursor is opaque.
+Clients receive a `nextCursor` and echo it back. The cursor is opaque. The
+AnodizeMCP client follows cursors automatically either way.
 
 ## Development
 
