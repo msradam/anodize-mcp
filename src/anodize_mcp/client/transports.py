@@ -16,7 +16,8 @@ import urllib.request
 from queue import Queue
 from typing import Any, Iterator, Optional
 
-from ..transports.memory import SHUTDOWN, serve_memory
+from ..protocol import json_default
+from ..transports.memory import SHUTDOWN, _jsonsafe, serve_memory
 
 # ---------------------------------------------------------------------------
 # Transports
@@ -41,7 +42,9 @@ class FastMCPTransport:
         ).start()
 
     def send(self, message: dict[str, Any]) -> None:
-        self._inbox.put(message)
+        # Round-trip through JSON so the in-memory path carries exactly what a
+        # wire transport would, in both directions.
+        self._inbox.put(_jsonsafe(message))
 
     def close(self) -> None:
         self._inbox.put(SHUTDOWN)
@@ -73,7 +76,7 @@ class _StdioTransport:
 
     def send(self, message: dict[str, Any]) -> None:
         assert self._proc is not None and self._proc.stdin is not None
-        self._proc.stdin.write(json.dumps(message).encode("utf-8") + b"\n")
+        self._proc.stdin.write(json.dumps(message, default=json_default).encode("utf-8") + b"\n")
         self._proc.stdin.flush()
 
     def close(self) -> None:
@@ -137,7 +140,10 @@ class StreamableHttpTransport:
         headers = self._request_headers("application/json, text/event-stream")
         headers["Content-Type"] = "application/json"
         req = urllib.request.Request(
-            self._url, data=json.dumps(message).encode("utf-8"), headers=headers, method="POST"
+            self._url,
+            data=json.dumps(message, default=json_default).encode("utf-8"),
+            headers=headers,
+            method="POST",
         )
         try:
             # A read timeout keeps a misbehaving server from hanging the client.

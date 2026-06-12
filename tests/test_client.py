@@ -153,6 +153,89 @@ class InMemoryClientTest(unittest.IsolatedAsyncioTestCase):
             r = await c.call_tool("where", {})
             self.assertEqual(r.text, "file:///a,file:///b")
 
+    async def test_fastmcp_handler_conventions(self):
+        mcp = AnodizeMCP("conv")
+
+        @mcp.tool
+        async def prog(ctx: Context) -> str:
+            await ctx.report_progress(1, 10, "step")
+            return "done"
+
+        @mcp.tool
+        async def logd(ctx: Context) -> str:
+            await ctx.info("hello")
+            return "ok"
+
+        @mcp.tool
+        async def sam(ctx: Context) -> str:
+            r = await ctx.sample("hi", system_prompt="SYS")
+            return r.text or ""
+
+        progress_events = []
+
+        async def on_progress(progress, total, message):
+            progress_events.append((progress, total, message))
+
+        logs = []
+
+        def on_log(m):
+            logs.append((m.level, m.data))
+
+        def sampling(messages, params, context):
+            return f"sys={params.systemPrompt}"
+
+        async with Client(mcp, log_handler=on_log, sampling_handler=sampling) as c:
+            r = await c.call_tool("prog", {}, progress_handler=on_progress)
+            self.assertEqual(r.text, "done")
+            self.assertEqual(progress_events, [(1, 10, "step")])
+            self.assertEqual((await c.call_tool("sam", {})).text, "sys=SYS")
+            await c.call_tool("logd", {})
+            self.assertIn(("info", "hello"), logs)
+
+    async def test_elicitation_handler_return_conventions(self):
+        @dataclass
+        class Prefs:
+            cuisine: str
+
+        mcp = AnodizeMCP("elic")
+
+        @mcp.tool
+        async def ask(ctx: Context) -> str:
+            r = await ctx.elicit("?", Prefs)
+            return f"{r.action}:{getattr(r.data, 'cuisine', r.data)}"
+
+        async def dict_handler(message, response_type, params, context):
+            return {"cuisine": "thai"}
+
+        async def dataclass_handler(message, response_type, params, context):
+            return Prefs(cuisine="thai")
+
+        for handler in (dict_handler, dataclass_handler):
+            async with Client(mcp, elicitation_handler=handler) as c:
+                r = await c.call_tool("ask", {})
+                self.assertEqual(r.text, "accept:thai")
+
+    async def test_bad_notification_handler_does_not_kill_session(self):
+        mcp = AnodizeMCP("robust")
+
+        @mcp.tool
+        async def prog(ctx: Context) -> str:
+            await ctx.report_progress(1, 2)
+            return "done"
+
+        @mcp.tool
+        def add(a: int, b: int) -> int:
+            return a + b
+
+        def bad_handler(progress, total, message):
+            raise ValueError("boom")
+
+        async with Client(mcp, progress_handler=bad_handler) as c:
+            await c.call_tool("prog", {})
+            r = await c.call_tool("add", {"a": 1, "b": 2})
+            self.assertEqual(r.data, 3)
+            self.assertTrue(c.is_connected())
+
     async def test_pagination_is_transparent(self):
         mcp = build_server(page_size=2)
         for i in range(5):

@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import inspect
+import logging
 import warnings
 from queue import Queue
 from typing import Any, Callable, Optional, Union
@@ -32,6 +34,8 @@ from ..protocol import (
 )
 from ..transports.memory import SHUTDOWN
 from .transports import _make_transport
+
+logger = logging.getLogger(__name__)
 
 
 class ClientError(McpError):
@@ -160,7 +164,12 @@ class Client:
                         future.set_exception(ClientError("connection closed"))
                 self._pending.clear()
                 return
-            await self._dispatch_incoming(message)
+            # A failing notification handler must not kill the session;
+            # FastMCP logs callback errors and keeps reading.
+            try:
+                await self._dispatch_incoming(message)
+            except Exception:
+                logger.exception("error handling incoming message")
 
     async def _dispatch_incoming(self, message: dict[str, Any]) -> None:
         method = message.get("method")
@@ -182,7 +191,9 @@ class Client:
             if method == "sampling/createMessage" and self._sampling_handler is not None:
                 result = _sampling_result(await _call_sampling(self._sampling_handler, params))
             elif method == "elicitation/create" and self._elicitation_handler is not None:
-                result = _elicit_result(await _call_elicitation(self._elicitation_handler, params))
+                result = _elicit_result(
+                    await _call_elicitation(self._elicitation_handler, params), params
+                )
             elif method == "roots/list":
                 result = {"roots": self._roots_list()}
             else:
@@ -194,13 +205,14 @@ class Client:
 
     async def _handle_notification(self, method: str, params: dict[str, Any]) -> None:
         if method == "notifications/message" and self._log_handler is not None:
-            await _call(self._log_handler, params)
+            # Wrapped so FastMCP-style handlers reading .level/.logger/.data work.
+            await _call(self._log_handler, _wrap(params))
         elif method == "notifications/progress":
             token = params.get("progressToken")
             handler = self._progress_handlers.get(token) if token is not None else None
             handler = handler or self._progress_handler
             if handler is not None:
-                await _call(handler, params)
+                await _call_progress(handler, params)
 
     def _roots_list(self) -> list[dict[str, Any]]:
         roots = self._roots() if callable(self._roots) else self._roots
@@ -427,17 +439,33 @@ def _positional_count(fn: Callable[..., Any]) -> int:
         return 1
 
 
+async def _call_progress(handler: Callable[..., Any], params: dict[str, Any]) -> Any:
+    """Invoke a progress handler, supporting both anodize's ``handler(params)``
+    and FastMCP's ``handler(progress, total, message)`` signatures."""
+    n = _positional_count(handler)
+    if n >= 3:
+        out = handler(params.get("progress"), params.get("total"), params.get("message"))
+    elif n == 2:
+        out = handler(params.get("progress"), params.get("total"))
+    else:
+        out = handler(_wrap(params))
+    if inspect.iscoroutine(out):
+        out = await out
+    return out
+
+
 async def _call_sampling(handler: Callable[..., Any], params: dict[str, Any]) -> Any:
     """Invoke a sampling handler, supporting both anodize's ``handler(params)`` and
     FastMCP's ``handler(messages, params, context)`` signatures."""
+    wrapped = _wrap(params)  # so handlers reading params.systemPrompt etc. work
     messages = _wrap(params.get("messages", []))
     n = _positional_count(handler)
     if n >= 3:
-        out = handler(messages, params, None)
+        out = handler(messages, wrapped, None)
     elif n == 2:
-        out = handler(messages, params)
+        out = handler(messages, wrapped)
     else:
-        out = handler(params)
+        out = handler(wrapped)
     if inspect.iscoroutine(out):
         out = await out
     return out
@@ -458,13 +486,14 @@ class _ElicitResponse:
 async def _call_elicitation(handler: Callable[..., Any], params: dict[str, Any]) -> Any:
     """Invoke an elicitation handler, supporting anodize's ``handler(params)`` and
     FastMCP's ``handler(message, response_type, params, context)`` signatures."""
+    wrapped = _wrap(params)
     n = _positional_count(handler)
     if n >= 4:
-        out = handler(params.get("message"), _ElicitResponse, params, None)
+        out = handler(params.get("message"), _ElicitResponse, wrapped, None)
     elif n == 2:
-        out = handler(params.get("message"), params)
+        out = handler(params.get("message"), wrapped)
     else:
-        out = handler(params)
+        out = handler(wrapped)
     if inspect.iscoroutine(out):
         out = await out
     return out
@@ -480,9 +509,47 @@ def _sampling_result(value: Any) -> dict[str, Any]:
     return value
 
 
-def _elicit_result(value: Any) -> dict[str, Any]:
-    if isinstance(value, str):
-        return {"action": value}
+_ELICIT_ACTIONS = ("accept", "decline", "cancel")
+
+
+def _elicit_result(value: Any, params: dict[str, Any]) -> dict[str, Any]:
+    """Build the wire result from a handler return, accepting both conventions.
+
+    anodize convention: a bare action string or a raw protocol dict with an
+    ``action`` key passes through. FastMCP convention: any other return is an
+    accept whose content is the value (dataclasses and pydantic models are
+    serialized; a scalar is wrapped as ``{"value": ...}`` when the requested
+    schema is the scalar shorthand, as FastMCP's client does).
+    """
     if isinstance(value, _ElicitResponse):
         return {"action": "accept", "content": value._fields}
-    return value
+    if isinstance(value, str) and value in _ELICIT_ACTIONS:
+        return {"action": value}
+    if isinstance(value, dict):
+        if value.get("action") in _ELICIT_ACTIONS:
+            return value
+        return {"action": "accept", "content": value}
+    if value is None:
+        return {"action": "accept"}
+    if hasattr(value, "action"):  # an ElicitResult, either anodize's or FastMCP's
+        out: dict[str, Any] = {"action": value.action}
+        content = getattr(value, "content", None)
+        if content is None:
+            content = getattr(value, "data", None)
+        if content is not None:
+            out["content"] = (
+                content if isinstance(content, dict) else _elicit_content(content, params)
+            )
+        return out
+    return {"action": "accept", "content": _elicit_content(value, params)}
+
+
+def _elicit_content(value: Any, params: dict[str, Any]) -> dict[str, Any]:
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return dataclasses.asdict(value)
+    if hasattr(value, "model_dump"):
+        return value.model_dump()
+    schema = params.get("requestedSchema") or {}
+    if set(schema.get("properties", {}).keys()) == {"value"}:
+        return {"value": value}
+    raise ValueError(f"elicitation responses must be a JSON object; received {value!r}")
