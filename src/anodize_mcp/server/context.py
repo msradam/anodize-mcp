@@ -122,10 +122,12 @@ class Context:
         logger_name: Optional[str] = None,
         logger: Optional[str] = None,
         data: Optional[Any] = None,
+        extra: Optional[dict[str, Any]] = None,
     ) -> Any:
         """Send a ``notifications/message`` log entry.
 
-        Argument order matches FastMCP: ``ctx.log(message, level=...)``.
+        Argument order matches FastMCP: ``ctx.log(message, level=...)``. The
+        wire payload is FastMCP's LogData shape, ``{"msg": ..., "extra": ...}``.
         """
         if self._session.should_log(level):
             payload: dict[str, Any] = {"level": level}
@@ -135,7 +137,8 @@ class Context:
             if data is not None:
                 payload["data"] = data
             else:
-                payload["data"] = message if isinstance(message, (dict, list)) else str(message)
+                msg = message if isinstance(message, (dict, list)) else str(message)
+                payload["data"] = {"msg": msg, "extra": extra}
             self._session.send_message(make_notification("notifications/message", payload))
         return defer(None)
 

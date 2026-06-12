@@ -6,7 +6,7 @@ import urllib.request
 import warnings
 from http.server import ThreadingHTTPServer
 
-from anodize_mcp import AnodizeMCP, Context, Middleware, Response
+from anodize_mcp import AnodizeMCP, Context, McpError, Middleware, Response
 from anodize_mcp.transports.http import _make_handler, _Manager
 from test_features import init_session, request
 
@@ -120,6 +120,41 @@ class MiddlewareTest(unittest.TestCase):
         self.assertEqual(observed["name"], "echo")
         self.assertTrue(observed["has_timestamp"])
         self.assertEqual(observed["result_text"], "x")
+
+    def test_middleware_copy_rewrites_request(self):
+        class Rewrite(Middleware):
+            async def on_call_tool(self, ctx, call_next):
+                message = dict(ctx.message)
+                message["arguments"] = {"text": "REWRITTEN"}
+                return await call_next(ctx.copy(message=message))
+
+        mcp = AnodizeMCP("rw")
+        mcp.add_middleware(Rewrite())
+
+        @mcp.tool
+        def echo(text: str) -> str:
+            return text
+
+        session, _ = init_session(mcp)
+        result = request(mcp, session, "tools/call", {"name": "echo", "arguments": {"text": "x"}})
+        self.assertEqual(result["result"]["content"][0]["text"], "REWRITTEN")
+
+    def test_middleware_error_becomes_tool_error_result(self):
+        class Deny(Middleware):
+            async def on_call_tool(self, ctx, call_next):
+                raise McpError("middleware denied", code=-32099)
+
+        mcp = AnodizeMCP("deny")
+        mcp.add_middleware(Deny())
+
+        @mcp.tool
+        def echo(text: str) -> str:
+            return text
+
+        session, _ = init_session(mcp)
+        result = request(mcp, session, "tools/call", {"name": "echo", "arguments": {"text": "x"}})
+        self.assertTrue(result["result"]["isError"])
+        self.assertEqual(result["result"]["content"][0]["text"], "middleware denied")
 
     def test_middleware_can_short_circuit(self):
         class Block(Middleware):

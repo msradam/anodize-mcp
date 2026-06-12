@@ -225,6 +225,12 @@ class Client:
     async def _request(
         self, method: str, params: Optional[dict[str, Any]] = None, timeout: Optional[float] = None
     ) -> Any:
+        if not self.is_connected():
+            # Without this a request after close() waits forever on a reader
+            # that no longer exists; FastMCP raises the same way.
+            raise RuntimeError(
+                "Client is not connected. Use the 'async with client:' context manager first."
+            )
         assert self._loop is not None
         self._req_id += 1
         request_id = self._req_id
@@ -448,10 +454,14 @@ async def _call(handler: Callable[..., Any], params: dict[str, Any]) -> Any:
 
 def _positional_count(fn: Callable[..., Any]) -> int:
     try:
-        kinds = (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
-        return sum(1 for p in inspect.signature(fn).parameters.values() if p.kind in kinds)
+        params = inspect.signature(fn).parameters.values()
     except (TypeError, ValueError):
         return 1
+    # *args accepts everything; treat it as the full FastMCP signature.
+    if any(p.kind is inspect.Parameter.VAR_POSITIONAL for p in params):
+        return 99
+    kinds = (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    return sum(1 for p in params if p.kind in kinds)
 
 
 async def _call_progress(handler: Callable[..., Any], params: dict[str, Any]) -> Any:

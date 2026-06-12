@@ -179,7 +179,7 @@ class InMemoryClientTest(unittest.IsolatedAsyncioTestCase):
         logs = []
 
         def on_log(m):
-            logs.append((m.level, m.data))
+            logs.append((m.level, m.data.msg))
 
         def sampling(messages, params, context):
             return f"sys={params.systemPrompt}"
@@ -214,6 +214,26 @@ class InMemoryClientTest(unittest.IsolatedAsyncioTestCase):
             async with Client(mcp, elicitation_handler=handler) as c:
                 r = await c.call_tool("ask", {})
                 self.assertEqual(r.text, "accept:thai")
+
+    async def test_star_args_progress_handler_gets_fastmcp_signature(self):
+        mcp = AnodizeMCP("star")
+
+        @mcp.tool
+        async def prog(ctx: Context) -> str:
+            await ctx.report_progress(1, 2, "half")
+            return "done"
+
+        events = []
+        async with Client(mcp, progress_handler=lambda *a: events.append(a)) as c:
+            await c.call_tool("prog", {})
+        self.assertEqual(events, [(1, 2, "half")])
+
+    async def test_request_after_close_raises(self):
+        client = Client(build_server())
+        async with client as c:
+            await c.ping()
+        with self.assertRaises(RuntimeError):
+            await client.call_tool("add", {"a": 1, "b": 2})
 
     async def test_bad_notification_handler_does_not_kill_session(self):
         mcp = AnodizeMCP("robust")

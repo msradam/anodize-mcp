@@ -122,7 +122,7 @@ class DispatchTest(unittest.TestCase):
 
     def test_unexpected_argument_rejected(self):
         resp = self.call("tools/call", {"name": "add", "arguments": {"a": 1, "b": 2, "x": 9}})
-        self.assertEqual(resp["error"]["code"], -32602)
+        self.assertTrue(resp["result"]["isError"])
 
     def test_non_json_returns_are_serializable(self):
         import base64
@@ -179,8 +179,9 @@ class DispatchTest(unittest.TestCase):
         )
 
     def test_tool_invalid_args(self):
+        # Input validation failures are isError tool results, as in FastMCP.
         resp = self.call("tools/call", {"name": "add", "arguments": {"a": "x", "b": 1}})
-        self.assertEqual(resp["error"]["code"], -32602)
+        self.assertTrue(resp["result"]["isError"])
 
     def test_tool_error_is_result(self):
         result = self.call("tools/call", {"name": "boom", "arguments": {}})["result"]

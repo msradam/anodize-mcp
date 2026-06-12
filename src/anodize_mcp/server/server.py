@@ -511,8 +511,11 @@ class AnodizeMCP:
 
         domain_terminal, rewrap = self._middleware_shapes(method, params, session, request_id)
 
-        async def terminal(_ctx: MiddlewareContext) -> Any:
-            return domain_terminal()
+        async def terminal(ctx: MiddlewareContext) -> Any:
+            # Honor context.copy(message=...): the terminal reads the message
+            # that reached it, not the original params.
+            effective = dict(ctx.message) if isinstance(ctx.message, dict) else params
+            return domain_terminal(effective)
 
         stages = ["on_message", "on_notification" if is_notification else "on_request"]
         operation_hook = OPERATION_HOOKS.get(method)
@@ -527,11 +530,20 @@ class AnodizeMCP:
                 handler = getattr(mw, stage, None)
                 if handler is not None:
                     call = _wrap_hook(handler, call)
+        if method == "tools/call":
+            # FastMCP converts any tools/call pipeline failure (middleware
+            # included) into a tool-level isError result.
+            try:
+                return rewrap(run_maybe_async(call(mw_context)))
+            except McpError as exc:
+                return self._tool_error(exc.message)
+            except Exception as exc:  # noqa: BLE001
+                return self._tool_error(str(exc))
         return rewrap(run_maybe_async(call(mw_context)))
 
     def _middleware_shapes(
         self, method: str, params: dict[str, Any], session: Session, request_id: Any
-    ) -> tuple[Callable[[], Any], Callable[[Any], Any]]:
+    ) -> tuple[Callable[[dict[str, Any]], Any], Callable[[Any], Any]]:
         """The terminal and re-enveloping pair for one middleware dispatch.
 
         Operation hooks see FastMCP's domain shapes (a ToolResult from
@@ -549,7 +561,7 @@ class AnodizeMCP:
         if method in list_keys:
             key = list_keys[method]
 
-            def list_terminal() -> Any:
+            def list_terminal(p: dict[str, Any]) -> Any:
                 return self._list_components(method)
 
             def list_rewrap(result: Any) -> Any:
@@ -561,8 +573,8 @@ class AnodizeMCP:
 
         if method == "tools/call":
 
-            def call_terminal() -> Any:
-                wire = self._handle_tool_call(params, session, request_id)
+            def call_terminal(p: dict[str, Any]) -> Any:
+                wire = self._handle_tool_call(p, session, request_id)
                 result = ToolResult(
                     content=attr_wrap(wire.get("content", [])),
                     structured_content=wire.get("structuredContent"),
@@ -580,8 +592,10 @@ class AnodizeMCP:
 
         if method == "resources/read":
 
-            def read_terminal() -> Any:
-                return attr_wrap(self._route(method, params, session, request_id)["contents"])
+            def read_terminal(p: dict[str, Any]) -> Any:
+                # Attribute-wrapped so middleware reading result.contents
+                # (FastMCP 3.x's ResourceResult shape) works.
+                return attr_wrap(self._route(method, p, session, request_id))
 
             def read_rewrap(result: Any) -> Any:
                 if isinstance(result, dict):
@@ -590,8 +604,8 @@ class AnodizeMCP:
 
             return read_terminal, read_rewrap
 
-        def default_terminal() -> Any:
-            result = self._route(method, params, session, request_id)
+        def default_terminal(p: dict[str, Any]) -> Any:
+            result = self._route(method, p, session, request_id)
             return attr_wrap(result) if isinstance(result, dict) else result
 
         return default_terminal, lambda result: result
@@ -713,6 +727,11 @@ class AnodizeMCP:
             coerced = coerce_arguments(
                 tool.param_specs, arguments, strict=self.strict_input_validation
             )
+        except McpError as exc:
+            # FastMCP reports input validation failures as isError results.
+            return self._tool_error(exc.message)
+
+        try:
             if tool.context_param:
                 coerced[tool.context_param] = Context(
                     session, self, request_id, progress_token=progress_token
