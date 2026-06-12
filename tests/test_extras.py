@@ -74,15 +74,52 @@ class MiddlewareTest(unittest.TestCase):
         seen.clear()  # drop the initialize message, which also flows through
         result = request(mcp, session, "tools/call", {"name": "echo", "arguments": {"text": "x"}})
         self.assertEqual(result["result"]["content"][0]["text"], "x")
+        # Per-middleware composition, as FastMCP orders it: every hook of the
+        # first middleware wraps every hook of the second.
         self.assertEqual(
             seen,
             [
                 ("a", "msg", "tools/call"),
-                ("b", "msg", "tools/call"),
                 ("a", "tool", "tools/call"),
+                ("b", "msg", "tools/call"),
                 ("b", "tool", "tools/call"),
             ],
         )
+
+    def test_fastmcp_middleware_shapes(self):
+        observed = {}
+
+        class Shapes(Middleware):
+            async def on_call_tool(self, ctx, call_next):
+                observed["name"] = ctx.message.name
+                observed["has_timestamp"] = ctx.timestamp is not None
+                result = await call_next(ctx.copy())
+                observed["result_text"] = result.content[0].text
+                return result
+
+            async def on_list_tools(self, ctx, call_next):
+                tools = await call_next(ctx)
+                return [t for t in tools if t.name != "hidden"]
+
+        mcp = AnodizeMCP("shape")
+        mcp.add_middleware(Shapes())
+
+        @mcp.tool
+        def echo(text: str) -> str:
+            return text
+
+        @mcp.tool
+        def hidden() -> str:
+            return "h"
+
+        session, _ = init_session(mcp)
+        listing = request(mcp, session, "tools/list", {})
+        self.assertEqual([t["name"] for t in listing["result"]["tools"]], ["echo"])
+        result = request(mcp, session, "tools/call", {"name": "echo", "arguments": {"text": "x"}})
+        self.assertEqual(result["result"]["content"][0]["text"], "x")
+        self.assertEqual(observed["name"], "echo")
+        self.assertTrue(observed["has_timestamp"])
+        self.assertEqual(observed["result_text"], "x")
 
     def test_middleware_can_short_circuit(self):
         class Block(Middleware):

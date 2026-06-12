@@ -60,6 +60,16 @@ F = TypeVar("F", bound=Callable[..., Any])
 _MAX_COMPLETION_VALUES = 100
 
 
+def _wrap_hook(handler: Callable[..., Any], next_call: Callable[..., Any]) -> Callable[..., Any]:
+    async def call(ctx: Any) -> Any:
+        out = handler(ctx, next_call)
+        if inspect.iscoroutine(out):
+            out = await out
+        return out
+
+    return call
+
+
 class AnodizeMCP:
     def __init__(
         self,
@@ -492,44 +502,108 @@ class AnodizeMCP:
         from .middleware.middleware import OPERATION_HOOKS, MiddlewareContext
 
         mw_context: MiddlewareContext = MiddlewareContext(
-            message=params,
+            message=attr_wrap(params),
             method=method,
             source="client",
             type="notification" if is_notification else "request",
             fastmcp_context=Context(session, self, request_id),
         )
 
+        domain_terminal, rewrap = self._middleware_shapes(method, params, session, request_id)
+
         async def terminal(_ctx: MiddlewareContext) -> Any:
-            return self._route(method, params, session, request_id)
+            return domain_terminal()
 
         stages = ["on_message", "on_notification" if is_notification else "on_request"]
         operation_hook = OPERATION_HOOKS.get(method)
         if operation_hook is not None:
             stages.append(operation_hook)
 
+        # Compose per middleware, as FastMCP does: every hook of the first
+        # middleware wraps every hook of the second, and so on.
         call: Any = terminal
-        for stage in reversed(stages):
-            call = self._wrap_stage(stage, call)
-        return run_maybe_async(call(mw_context))
+        for mw in reversed(self._middleware):
+            for stage in reversed(stages):
+                handler = getattr(mw, stage, None)
+                if handler is not None:
+                    call = _wrap_hook(handler, call)
+        return rewrap(run_maybe_async(call(mw_context)))
 
-    def _wrap_stage(self, stage_name: str, terminal: Any) -> Any:
-        handlers = [getattr(mw, stage_name) for mw in self._middleware if hasattr(mw, stage_name)]
+    def _middleware_shapes(
+        self, method: str, params: dict[str, Any], session: Session, request_id: Any
+    ) -> tuple[Callable[[], Any], Callable[[Any], Any]]:
+        """The terminal and re-enveloping pair for one middleware dispatch.
 
-        def build(index: int) -> Any:
-            if index >= len(handlers):
-                return terminal
+        Operation hooks see FastMCP's domain shapes (a ToolResult from
+        tools/call, component lists from the list methods, the contents list
+        from resources/read); the wire envelope and pagination are applied
+        after the chain returns. A hook that returns the wire dict directly
+        (the pre-0.7 anodize convention) still works.
+        """
+        list_keys = {
+            "tools/list": "tools",
+            "resources/list": "resources",
+            "resources/templates/list": "resourceTemplates",
+            "prompts/list": "prompts",
+        }
+        if method in list_keys:
+            key = list_keys[method]
 
-            next_call = build(index + 1)
+            def list_terminal() -> Any:
+                return self._list_components(method)
 
-            async def call(ctx: Any) -> Any:
-                out = handlers[index](ctx, next_call)
-                if inspect.iscoroutine(out):
-                    out = await out
-                return out
+            def list_rewrap(result: Any) -> Any:
+                if isinstance(result, dict):
+                    return result
+                return self._paged(key, list(result), params)
 
-            return call
+            return list_terminal, list_rewrap
 
-        return build(0)
+        if method == "tools/call":
+
+            def call_terminal() -> Any:
+                wire = self._handle_tool_call(params, session, request_id)
+                result = ToolResult(
+                    content=attr_wrap(wire.get("content", [])),
+                    structured_content=wire.get("structuredContent"),
+                    meta=wire.get("_meta"),
+                    is_error=wire.get("isError", False),
+                )
+                return result
+
+            def call_rewrap(result: Any) -> Any:
+                if isinstance(result, ToolResult):
+                    return self._tool_result_to_wire(result)
+                return result
+
+            return call_terminal, call_rewrap
+
+        if method == "resources/read":
+
+            def read_terminal() -> Any:
+                return attr_wrap(self._route(method, params, session, request_id)["contents"])
+
+            def read_rewrap(result: Any) -> Any:
+                if isinstance(result, dict):
+                    return result
+                return {"contents": list(result)}
+
+            return read_terminal, read_rewrap
+
+        def default_terminal() -> Any:
+            result = self._route(method, params, session, request_id)
+            return attr_wrap(result) if isinstance(result, dict) else result
+
+        return default_terminal, lambda result: result
+
+    def _list_components(self, method: str) -> list[Any]:
+        if method == "tools/list":
+            return [t for t in self._tools.values() if t.name not in self._disabled]
+        if method == "resources/list":
+            return list(self._resources.values())
+        if method == "resources/templates/list":
+            return list(self._templates)
+        return list(self._prompts.values())
 
     def _route(self, method: str, params: dict[str, Any], session: Session, request_id: Any) -> Any:
         if method == "initialize":
@@ -658,13 +732,7 @@ class AnodizeMCP:
             return self._tool_error(detail)
 
         if isinstance(value, ToolResult):
-            blocks = normalize_tool_result(value.content)[0] if value.content is not None else []
-            out: dict[str, Any] = {"content": blocks, "isError": value.is_error}
-            if value.structured_content is not None:
-                out["structuredContent"] = to_jsonable(value.structured_content)
-            if value.meta is not None:
-                out["_meta"] = value.meta
-            return out
+            return self._tool_result_to_wire(value)
 
         content, _ = normalize_tool_result(value)
         result: dict[str, Any] = {"content": content, "isError": False}
@@ -682,6 +750,19 @@ class AnodizeMCP:
     @staticmethod
     def _tool_error(message: str) -> dict[str, Any]:
         return {"content": [{"type": "text", "text": message}], "isError": True}
+
+    def _tool_result_to_wire(self, value: ToolResult) -> dict[str, Any]:
+        content = value.content
+        if isinstance(content, list) and all(isinstance(b, dict) and "type" in b for b in content):
+            blocks: list[dict[str, Any]] = [dict(b) for b in content]
+        else:
+            blocks = normalize_tool_result(content)[0] if content is not None else []
+        out: dict[str, Any] = {"content": blocks, "isError": value.is_error}
+        if value.structured_content is not None:
+            out["structuredContent"] = to_jsonable(value.structured_content)
+        if value.meta is not None:
+            out["_meta"] = value.meta
+        return out
 
     def read_resource(
         self, uri: str, session: Session, request_id: Any = None
