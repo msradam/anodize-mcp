@@ -7,27 +7,19 @@
 
 <h1 align="center">AnodizeMCP</h1>
 
-A lightweight, pure-Python implementation of the [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server framework. **No Rust and no compiled extensions**, so it installs and runs wherever a Rust toolchain cannot.
+A pure-Python framework for building [Model Context Protocol](https://modelcontextprotocol.io) servers, with a FastMCP-compatible API, for platforms where Rust cannot go.
 
-The official MCP SDK and FastMCP both depend on `pydantic`, which depends on `pydantic-core` (compiled Rust). That dependency has no prebuilt wheel for many targets and cannot be compiled where a Rust toolchain is unavailable or disallowed. AnodizeMCP fills that gap: it implements the same FastMCP-style API using only the standard library plus pure-Python dependencies. The server class is `AnodizeMCP`, also exported as `FastMCP` so switching later is a one-line import change.
+The official MCP SDK and FastMCP depend on `pydantic-core`, which is compiled Rust with no wheel for many targets. AnodizeMCP implements the same FastMCP-style API using only the standard library plus pure-Python dependencies (its one runtime dependency, `uvicorn`, is pure Python). The server class is `AnodizeMCP`, also exported as `FastMCP`, so a server written here moves to FastMCP by changing one import.
 
-The constraint is specifically **Rust**, not dependencies. AnodizeMCP's only runtime dependency is `uvicorn` (pure Python, no compiled code), which provides a production-grade HTTP server. The MCP core itself is standard library only.
+## Features
 
-## Why it exists
-
-The barrier is specific: a Rust-based package with no prebuilt wheel for your platform and no way to build one because there is no Rust toolchain. `pydantic-core` (under both FastMCP and the official SDK) is the clearest case. AnodizeMCP and its dependencies contain no Rust and no compiled code, so they install where those cannot:
-
-- **z/OS** (the sharpest case): IBM's Open Enterprise SDK for Python bundles `cryptography` (3.3.2, pre-Rust) and `numpy`, but there is no `rustc` targeting z/OS, so `pydantic-core` cannot be built or installed. AnodizeMCP and `uvicorn` install clean.
-- **Linux on IBM Z (s390x), AIX, Solaris/illumos, the BSDs, Cygwin** where prebuilt wheels are often absent (on s390x Linux you can build from source, slowly; AnodizeMCP skips the build).
-- **Exotic or older CPU architectures**: ppc64le, riscv64, ARMv6/v7, mips, sparc.
-- **WebAssembly** (Pyodide, PyScript) and **locked-down or air-gapped build environments** with no compiler, no network, or a no-Rust policy.
-
-| | Dependencies | Rust / compiled code | Installs without a build toolchain |
-|---|---|---|---|
-| Official `mcp` SDK | pydantic, anyio, httpx, starlette, uvicorn | pydantic-core (Rust) | no |
-| FastMCP | pydantic + many | pydantic-core (Rust) | no |
-| `pure-mcp` | pydantic, anyio, httpx, jsonschema | pydantic-core (Rust) | no |
-| **AnodizeMCP** | uvicorn (pure Python) | **none** | **yes** |
+- `@mcp.tool` / `@mcp.resource` / `@mcp.prompt`, with input schemas generated from type hints
+- stdio and Streamable HTTP transports (HTTP runs under uvicorn)
+- `Context` for logging, progress, sampling, elicitation, roots, and resource reads
+- Bearer and JWT auth, middleware, custom routes, completions, lifespan, pagination
+- An in-memory test client, like FastMCP's
+- No Rust and no compiled extensions, so it installs where `pydantic-core` cannot (z/OS, ARMv6, AIX, s390x, ...)
+- FastMCP-compatible: 169 of FastMCP's own tests pass against it as a parity gate
 
 ## Install
 
@@ -73,6 +65,24 @@ def scale(factor: Annotated[float, Field(ge=0, le=10, description="0 to 10")]) -
 ```
 
 A dataclass return value produces an `outputSchema` and `structuredContent` automatically.
+
+## Why it exists
+
+The barrier is specific: a Rust-based package with no prebuilt wheel for your platform and no way to build one because there is no Rust toolchain. `pydantic-core` (under both FastMCP and the official SDK) is the clearest case. AnodizeMCP and its dependencies contain no Rust and no compiled code, so they install where those cannot:
+
+- **z/OS** (the sharpest case): IBM's Open Enterprise SDK for Python bundles `cryptography` (3.3.2, pre-Rust) and `numpy`, but there is no `rustc` targeting z/OS, so `pydantic-core` cannot be built or installed. AnodizeMCP and `uvicorn` install clean.
+- **Linux on IBM Z (s390x), AIX, Solaris/illumos, the BSDs, Cygwin** where prebuilt wheels are often absent (on s390x Linux you can build from source, slowly; AnodizeMCP skips the build).
+- **Exotic or older CPU architectures**: ppc64le, riscv64, ARMv6/v7, mips, sparc.
+- **WebAssembly** (Pyodide, PyScript) and **locked-down or air-gapped build environments** with no compiler, no network, or a no-Rust policy.
+
+The constraint is specifically Rust, not compiled code: C extensions still build.
+
+| | Dependencies | Rust / compiled code | Installs without a build toolchain |
+|---|---|---|---|
+| Official `mcp` SDK | pydantic, anyio, httpx, starlette, uvicorn | pydantic-core (Rust) | no |
+| FastMCP | pydantic + many | pydantic-core (Rust) | no |
+| `pure-mcp` | pydantic, anyio, httpx, jsonschema | pydantic-core (Rust) | no |
+| **AnodizeMCP** | uvicorn (pure Python) | **none** | **yes** |
 
 ## Drop-in compatibility with FastMCP
 
