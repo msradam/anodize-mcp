@@ -4,6 +4,7 @@ import socket
 import threading
 import time
 import unittest
+import unittest.mock
 from dataclasses import dataclass
 
 from anodize_mcp import AnodizeMCP, Context, Response, StaticTokenVerifier
@@ -292,6 +293,187 @@ class AsgiUvicornTest(unittest.TestCase):
         self.assertTrue(
             any("progress" in e for e in get_events), f"no progress event in {get_events}"
         )
+
+
+class HttpAppAliasTest(unittest.TestCase):
+    def test_http_app_matches_asgi_app(self):
+        mcp = build_server()
+        self.assertTrue(callable(mcp.http_app()))
+        self.assertTrue(callable(mcp.http_app(path="/x", stateless=True)))
+
+    def test_http_app_accepts_stateless_http(self):
+        mcp = build_server()
+        self.assertTrue(callable(mcp.http_app(stateless_http=True)))
+
+    def test_http_app_exposes_lifespan(self):
+        import asyncio
+
+        app = build_server().http_app()
+        self.assertTrue(hasattr(app, "lifespan"))
+
+        async def drive():
+            async with app.lifespan(app):
+                pass
+
+        asyncio.run(drive())
+
+
+class MountRootPathTest(unittest.TestCase):
+    """When mounted, root_path carries the prefix; matching must strip it."""
+
+    def _request(self, app, scope, body=b""):
+        import asyncio
+
+        async def run():
+            sent = []
+            received = [
+                {"type": "http.request", "body": body, "more_body": False},
+            ]
+
+            async def receive():
+                return received.pop(0)
+
+            async def send(msg):
+                sent.append(msg)
+
+            await app(scope, receive, send)
+            return sent
+
+        return asyncio.run(run())
+
+    def test_mounted_request_routes_via_root_path(self):
+        app = build_server().http_app(path="/")  # external /mcp/ via Mount("/mcp")
+        body = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {}},
+            }
+        ).encode()
+        scope = {
+            "type": "http",
+            "method": "POST",
+            "path": "/mcp/",
+            "root_path": "/mcp",
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"accept", b"application/json, text/event-stream"),
+            ],
+        }
+        sent = self._request(app, scope, body)
+        start = next(m for m in sent if m["type"] == "http.response.start")
+        self.assertEqual(start["status"], 200)
+
+    def test_mounted_trailing_slash_redirect_keeps_prefix(self):
+        app = build_server().http_app(path="/mcp")
+        scope = {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/mcp/",
+            "root_path": "/api",
+            "headers": [],
+        }
+        sent = self._request(app, scope)
+        start = next(m for m in sent if m["type"] == "http.response.start")
+        self.assertEqual(start["status"], 307)
+        location = dict(start["headers"])[b"location"]
+        self.assertEqual(location, b"/api/mcp")
+
+
+class MiddlewareTest(unittest.TestCase):
+    def test_wrapping_order_and_reach_base(self):
+        import asyncio
+
+        from anodize_mcp.transports.asgi import _apply_middleware
+
+        order = []
+
+        def mk(name):
+            def factory(app):
+                async def mw(scope, receive, send):
+                    order.append(name)
+                    await app(scope, receive, send)
+
+                return mw
+
+            return factory
+
+        reached = []
+
+        async def base(scope, receive, send):
+            reached.append(True)
+
+        wrapped = _apply_middleware(base, [mk("A"), mk("B")])
+        asyncio.run(wrapped({"type": "http"}, None, None))
+        self.assertEqual(order, ["A", "B"])
+        self.assertEqual(reached, [True])
+
+    def test_cls_args_kwargs_tuple_form(self):
+        from anodize_mcp.transports.asgi import _apply_middleware
+
+        class Dummy:
+            def __init__(self, app, **kw):
+                self.app = app
+                self.kw = kw
+
+        async def base(scope, receive, send):
+            pass
+
+        wrapped = _apply_middleware(base, [(Dummy, (), {"foo": 1})])
+        self.assertIsInstance(wrapped, Dummy)
+        self.assertEqual(wrapped.kw, {"foo": 1})
+
+
+@unittest.skipUnless(_HAS_UVICORN, "uvicorn required")
+class RunHttpTlsTest(unittest.TestCase):
+    def test_uvicorn_config_reaches_config(self):
+        import uvicorn
+
+        captured = {}
+
+        class FakeConfig:
+            def __init__(self, app, **kwargs):
+                captured.update(kwargs)
+
+        class FakeServer:
+            def __init__(self, config):
+                pass
+
+            def run(self):
+                pass
+
+        with (
+            unittest.mock.patch.object(uvicorn, "Config", FakeConfig),
+            unittest.mock.patch.object(uvicorn, "Server", FakeServer),
+        ):
+            build_server().run_http(
+                port=free_port(),
+                uvicorn_config={"ssl_keyfile": "key.pem", "ssl_certfile": "cert.pem"},
+            )
+
+        self.assertEqual(captured.get("ssl_keyfile"), "key.pem")
+        self.assertEqual(captured.get("ssl_certfile"), "cert.pem")
+
+
+class RunHttpFallbackGuardTest(unittest.TestCase):
+    def test_uvicorn_config_without_uvicorn_raises(self):
+        real_find_spec = importlib.util.find_spec
+
+        def fake_find_spec(name, *args, **kwargs):
+            if name == "uvicorn":
+                return None
+            return real_find_spec(name, *args, **kwargs)
+
+        for kwargs in (
+            {"uvicorn_config": {"ssl_keyfile": "key.pem"}},
+            {"middleware": [lambda a: a]},
+        ):
+            with (
+                unittest.mock.patch.object(importlib.util, "find_spec", fake_find_spec),
+                self.assertRaises(RuntimeError),
+            ):
+                build_server().run_http(port=free_port(), **kwargs)
 
 
 if __name__ == "__main__":

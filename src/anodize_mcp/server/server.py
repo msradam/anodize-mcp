@@ -11,7 +11,7 @@ import inspect
 import threading
 import warnings
 import weakref
-from typing import Any, Callable, Optional, TypeVar
+from typing import Any, Callable, Optional, Sequence, TypeVar
 
 from .. import _compat
 from .._asyncrun import run_coro, run_maybe_async
@@ -1044,12 +1044,42 @@ class AnodizeMCP:
         path: str = "/mcp",
         allowed_origins: Optional[set[str]] = None,
         stateless: bool = False,
+        stateless_http: Optional[bool] = None,
+        middleware: Optional[Sequence[Any]] = None,
     ) -> Any:
-        """Return the ASGI application, to run under uvicorn/gunicorn/hypercorn."""
+        """Return the ASGI application, to run under uvicorn/gunicorn/hypercorn.
+
+        ``stateless_http`` is the FastMCP-named alias of ``stateless``. The
+        returned app carries a ``.lifespan`` attribute for mounting under
+        Starlette/FastAPI.
+        """
         from ..transports.asgi import make_asgi_app
 
         return make_asgi_app(
-            self, endpoint=path, allowed_origins=allowed_origins, stateless=stateless
+            self,
+            endpoint=path,
+            allowed_origins=allowed_origins,
+            stateless=stateless,
+            stateless_http=stateless_http,
+            middleware=middleware,
+        )
+
+    def http_app(
+        self,
+        *,
+        path: str = "/mcp",
+        allowed_origins: Optional[set[str]] = None,
+        stateless: bool = False,
+        stateless_http: Optional[bool] = None,
+        middleware: Optional[Sequence[Any]] = None,
+    ) -> Any:
+        """FastMCP-named alias for :meth:`asgi_app`."""
+        return self.asgi_app(
+            path=path,
+            allowed_origins=allowed_origins,
+            stateless=stateless,
+            stateless_http=stateless_http,
+            middleware=middleware,
         )
 
     def run_http(
@@ -1061,6 +1091,8 @@ class AnodizeMCP:
         log_level: Optional[str] = None,
         allowed_origins: Optional[set[str]] = None,
         stateless: bool = False,
+        stateless_http: Optional[bool] = None,
+        middleware: Optional[Sequence[Any]] = None,
         uvicorn_config: Optional[dict[str, Any]] = None,
         sockets: Any = None,
     ) -> None:
@@ -1068,14 +1100,26 @@ class AnodizeMCP:
 
         The uvicorn config matches FastMCP's defaults (``timeout_graceful_shutdown=2``,
         ``lifespan="on"``); ``uvicorn_config`` is merged in for any other settings.
-        Falls back to the standard-library server when uvicorn is not installed.
+        ``stateless_http`` is the FastMCP-named alias of ``stateless``. Falls back
+        to the standard-library server when uvicorn is not installed, but options
+        it cannot honor (a non-empty ``uvicorn_config`` such as TLS via
+        ``ssl_keyfile`` / ``ssl_certfile``, or ``middleware``) raise instead.
         """
         import importlib.util
+
+        if stateless_http is not None:
+            stateless = stateless_http
 
         if importlib.util.find_spec("uvicorn") is not None:
             import uvicorn
 
-            app = self.asgi_app(path=path, allowed_origins=allowed_origins, stateless=stateless)
+            app = self.asgi_app(
+                path=path,
+                allowed_origins=allowed_origins,
+                stateless=stateless,
+                stateless_http=stateless_http,
+                middleware=middleware,
+            )
             config_kwargs: dict[str, Any] = {"timeout_graceful_shutdown": 2, "lifespan": "on"}
             if log_level is not None:
                 config_kwargs["log_level"] = log_level.lower()
@@ -1088,6 +1132,14 @@ class AnodizeMCP:
             else:
                 server.run()
             return
+
+        if uvicorn_config or middleware:
+            raise RuntimeError(
+                "uvicorn_config or middleware was given but uvicorn is not importable; "
+                "neither can be honored by the standard-library fallback (TLS via "
+                "ssl_keyfile/ssl_certfile included). uvicorn is a declared dependency: "
+                "install it, or drop these options to use the fallback."
+            )
 
         from ..transports.http import serve_http
 

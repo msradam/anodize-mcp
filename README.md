@@ -232,19 +232,49 @@ mcp.run(
     path="/mcp",
     log_level="info",
     allowed_origins={"localhost", "127.0.0.1"},   # or {"*"} to disable the Origin check
-    stateless=False,                              # True skips session tracking
+    stateless_http=False,                         # True skips session tracking (alias: stateless)
     uvicorn_config={"timeout_keep_alive": 30},    # any uvicorn.Config setting
 )
 ```
 
-For your own server (gunicorn, hypercorn, behind a reverse proxy, or mounted in a larger app), get the ASGI app directly:
+For your own server (gunicorn, hypercorn, behind a reverse proxy, or mounted in a larger app), get the ASGI app directly. `http_app` and `asgi_app` are the same call; `http_app` matches FastMCP's name:
 
 ```python
-app = mcp.asgi_app(path="/mcp")
+app = mcp.http_app(path="/mcp", stateless_http=True)
 # uvicorn anodize_app:app --host 0.0.0.0 --port 8000
 ```
 
-If uvicorn is somehow not installed, `run("http", ...)` falls back to the standard-library `http.server`. The HTTP transport validates the `Origin` header (localhost only by default), tracks sessions with `Mcp-Session-Id`, and serves server-to-client messages (progress, logging, sampling) over a GET SSE stream.
+Add ASGI middleware (Starlette `Middleware` objects, `(cls, args, kwargs)` tuples, or bare `app -> app` callables; first item is outermost):
+
+```python
+from starlette.middleware import Middleware
+from starlette.middleware.cors import CORSMiddleware
+
+app = mcp.http_app(middleware=[Middleware(CORSMiddleware, allow_origins=["*"])])
+```
+
+Mount under an existing Starlette/FastAPI app. The mounted app's lifespan is not driven by the parent automatically, so pass `app.lifespan`:
+
+```python
+from starlette.applications import Starlette
+from starlette.routing import Mount
+
+mcp_app = mcp.http_app(path="/")
+app = Starlette(routes=[Mount("/mcp", app=mcp_app)], lifespan=mcp_app.lifespan)
+```
+
+`event_store` / `retry_interval` (FastMCP's resumable-SSE options) are not implemented.
+
+### HTTPS / TLS
+
+Like FastMCP, there is no native TLS layer. Production HTTPS is expected to terminate at the edge (reverse proxy, load balancer, or CDN) with the app speaking plain HTTP internally. For direct in-process TLS, pass uvicorn's own settings through `uvicorn_config`:
+
+```python
+mcp.run("http", port=8443,
+        uvicorn_config={"ssl_keyfile": "key.pem", "ssl_certfile": "cert.pem"})
+```
+
+If uvicorn is somehow not installed, `run("http", ...)` falls back to the standard-library `http.server`; that fallback does not honor `uvicorn_config`, so passing one (TLS or otherwise) raises rather than silently serving plaintext. The HTTP transport validates the `Origin` header (localhost only by default), tracks sessions with `Mcp-Session-Id`, and serves server-to-client messages (progress, logging, sampling) over a GET SSE stream.
 
 ## Completions
 

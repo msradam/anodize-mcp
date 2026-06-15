@@ -14,10 +14,11 @@ lets the client's reply arrive on another request and unblock it.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import json
 import queue
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, Optional, Sequence
 
 from ..auth import _CURRENT_TOKEN, authorize_request
 from ..exceptions import INVALID_PARAMS, PARSE_ERROR
@@ -31,14 +32,60 @@ if TYPE_CHECKING:
 _SSE_KEEPALIVE_SECONDS = 15.0
 
 
+def _make_lifespan(server: AnodizeMCP) -> Callable[..., Any]:
+    """A Starlette-compatible lifespan, for mounting under another ASGI app.
+
+    Starlette/FastAPI do not drive a mounted sub-app's lifespan, so the parent
+    must run this (``lifespan=mcp_app.lifespan``) to enter/exit the server's
+    lifespan context.
+    """
+
+    @contextlib.asynccontextmanager
+    async def lifespan(app: Any = None) -> Any:
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, server._enter_lifespan)
+        try:
+            yield
+        finally:
+            await loop.run_in_executor(None, server._exit_lifespan)
+
+    return lifespan
+
+
+def _apply_middleware(app: Callable[..., Any], middleware: Sequence[Any]) -> Callable[..., Any]:
+    """Wrap ``app`` with ASGI middleware, first item outermost.
+
+    Each item may be a Starlette ``Middleware`` (or a ``(cls, args, kwargs)``
+    tuple) or a bare ``app -> app`` ASGI callable.
+    """
+    for item in reversed(list(middleware)):
+        try:
+            cls, args, kwargs = item
+        except (TypeError, ValueError):
+            app = item(app)
+        else:
+            app = cls(app, *args, **kwargs)
+    return app
+
+
 def make_asgi_app(
     server: AnodizeMCP,
     *,
     endpoint: str = "/mcp",
     allowed_origins: set[str] | None = None,
     stateless: bool = False,
+    stateless_http: Optional[bool] = None,
+    middleware: Optional[Sequence[Any]] = None,
 ) -> Callable[..., Any]:
-    """Build the ASGI application for ``server``."""
+    """Build the ASGI application for ``server``.
+
+    ``stateless_http`` is the FastMCP-named alias of ``stateless`` and takes
+    precedence when given. ``middleware`` wraps the app (see
+    :func:`_apply_middleware`). The returned app carries a ``.lifespan``
+    attribute for mounting under Starlette/FastAPI.
+    """
+    if stateless_http is not None:
+        stateless = stateless_http
     manager = _Manager(server, endpoint, allowed_origins, stateless)
 
     async def app(scope: dict[str, Any], receive: Any, send: Any) -> None:
@@ -47,7 +94,9 @@ def make_asgi_app(
         elif scope["type"] == "http":
             await _http(server, manager, scope, receive, send)
 
-    return app
+    wrapped: Any = _apply_middleware(app, middleware) if middleware else app
+    wrapped.lifespan = _make_lifespan(server)
+    return wrapped
 
 
 # ---------------------------------------------------------------------------
@@ -121,17 +170,24 @@ async def _http(
     server: AnodizeMCP, manager: _Manager, scope: dict[str, Any], receive: Any, send: Any
 ) -> None:
     method = scope["method"]
-    path = scope["path"]
     headers = _headers(scope)
+
+    # When mounted under another ASGI app, ``root_path`` is the mount prefix and
+    # ``path`` still carries it; strip it so matching is relative to the endpoint.
+    root_path = scope.get("root_path", "")
+    path = scope["path"]
+    if root_path and path.startswith(root_path):
+        path = path[len(root_path) :] or "/"
 
     if path != manager.endpoint:
         # FastMCP (Starlette redirect_slashes) 307-redirects /mcp/ to /mcp.
         if path == manager.endpoint + "/":
+            location = (root_path + manager.endpoint).encode("ascii")
             await send(
                 {
                     "type": "http.response.start",
                     "status": 307,
-                    "headers": [(b"location", manager.endpoint.encode("ascii"))],
+                    "headers": [(b"location", location)],
                 }
             )
             await send({"type": "http.response.body", "body": b""})
