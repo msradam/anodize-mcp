@@ -5,6 +5,7 @@ import json
 import threading
 import time
 import unittest
+import unittest.mock
 import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
@@ -167,6 +168,74 @@ class HttpAuthTest(unittest.TestCase):
             {"good": {"scopes": ["use"]}}, required_scopes=["admin"]
         )
         self.assertEqual(self.post("good")[0], 403)
+
+
+class JWTVerifierJWKSCacheTest(unittest.TestCase):
+    """JWKS cache must expire after cache_ttl seconds and re-fetch."""
+
+    def _make_fake_jwks_urlopen(self, call_counter):
+        """Return a urlopen mock that increments call_counter on each real fetch."""
+
+        class _FakeResponse:
+            def __init__(self):
+                self.data = json.dumps({"keys": []}).encode()
+
+            def read(self):
+                return self.data
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
+        import contextlib
+
+        @contextlib.contextmanager
+        def fake_urlopen(url, timeout=None):
+            call_counter.append(1)
+            yield _FakeResponse()
+
+        return fake_urlopen
+
+    def test_cache_is_used_within_ttl(self):
+        counter = []
+        v = JWTVerifier(jwks_uri="https://example.com/.well-known/jwks.json", cache_ttl=3600)
+        fake_open = self._make_fake_jwks_urlopen(counter)
+
+        with unittest.mock.patch("urllib.request.urlopen", fake_open):
+            v._load_jwks()
+            v._load_jwks()
+            v._load_jwks()
+
+        self.assertEqual(len(counter), 1, "should only fetch once within TTL")
+
+    def test_cache_expires_after_ttl(self):
+        counter = []
+        v = JWTVerifier(jwks_uri="https://example.com/.well-known/jwks.json", cache_ttl=60)
+        fake_open = self._make_fake_jwks_urlopen(counter)
+
+        times = [1000.0, 1010.0, 1070.0]  # within TTL, within TTL, past 60s TTL
+        with (
+            unittest.mock.patch("urllib.request.urlopen", fake_open),
+            unittest.mock.patch("time.monotonic", side_effect=times),
+        ):
+            v._load_jwks()  # t=1000, fetches
+            v._load_jwks()  # t=1010, cache hit (10s < 60s)
+            v._load_jwks()  # t=1070, re-fetches (70s > 60s)
+
+        self.assertEqual(len(counter), 2, "should re-fetch once TTL is exceeded")
+
+    def test_cache_ttl_zero_always_fetches(self):
+        counter = []
+        v = JWTVerifier(jwks_uri="https://example.com/.well-known/jwks.json", cache_ttl=0)
+        fake_open = self._make_fake_jwks_urlopen(counter)
+
+        with unittest.mock.patch("urllib.request.urlopen", fake_open):
+            v._load_jwks()
+            v._load_jwks()
+
+        self.assertEqual(len(counter), 2, "cache_ttl=0 should always re-fetch")
 
 
 class NoAuthTest(unittest.TestCase):

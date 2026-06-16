@@ -61,7 +61,10 @@ class ErrorHandlingMiddleware(Middleware):
                 self.logger.error(f"Error in error callback: {callback_error}")
 
     def _transform_error(self, error: Exception, context: MiddlewareContext) -> Exception:
-        if isinstance(error, McpError):
+        # McpError instances are already protocol-layer errors; pass them through,
+        # except NotFoundError which FastMCP re-classifies by method context
+        # (non-resource NotFoundError maps to -32001, not -32002).
+        if isinstance(error, McpError) and not isinstance(error, NotFoundError):
             return error
         if not self.transform_errors:
             return error

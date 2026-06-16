@@ -19,6 +19,7 @@ def pytest_configure(config):
     import fastmcp.server.server as server_module
     import mcp
     import mcp.shared.exceptions
+    import mcp.types
 
     import anodize_mcp
     import anodize_mcp.server.middleware.error_handling
@@ -34,6 +35,9 @@ def pytest_configure(config):
     mcp.McpError = anodize_mcp.McpError
     mcp.shared.exceptions.McpError = anodize_mcp.McpError
 
+    # ErrorData: anodize's dataclass mirrors mcp.types.ErrorData for McpError construction.
+    mcp.types.ErrorData = anodize_mcp.exceptions.ErrorData
+
     # Server and client classes (both the top-level and submodule bindings).
     fastmcp.FastMCP = anodize_mcp.AnodizeMCP
     server_module.FastMCP = anodize_mcp.AnodizeMCP
@@ -45,6 +49,8 @@ def pytest_configure(config):
     # ClientError; map them so error-path assertions resolve.
     fastmcp.exceptions.ToolError = anodize_mcp.ClientError
     fastmcp.exceptions.NotFoundError = anodize_mcp.NotFoundError
+    # ResourceError and PromptError are left as FastMCP's originals so that
+    # tests using FileResource.read() and FastMCP's error hierarchy work correctly.
 
     # Feature modules, mapped to the anodize equivalents (same relative paths).
     mw = anodize_mcp.server.middleware

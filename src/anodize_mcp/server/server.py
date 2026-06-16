@@ -719,8 +719,9 @@ class AnodizeMCP:
             return self._paged("resourceTemplates", list(self._templates), params)
         if method == "resources/read":
             uri = params.get("uri")
-            if not isinstance(uri, str):
+            if uri is None:
                 raise InvalidParams("resources/read requires a string 'uri'")
+            uri = str(uri)
             return {"contents": self.read_resource(uri, session, request_id)}
         if method == "resources/subscribe":
             uri = params.get("uri")
@@ -883,8 +884,8 @@ class AnodizeMCP:
     ) -> list[dict[str, Any]]:
         resource = self._resources.get(uri)
         if resource is not None:
-            value = self._invoke_resource(
-                resource.handler, {}, resource.context_param, session, request_id
+            value = self._read_resource_safe(
+                uri, resource.handler, {}, resource.context_param, session, request_id
             )
             return normalize_resource_result(uri, value, resource.mime_type)
 
@@ -896,8 +897,8 @@ class AnodizeMCP:
                 # Path variables arrive as strings; coerce to the annotated
                 # types, as FastMCP's pydantic validation does.
                 variables = coerce_arguments(template.param_specs, variables)
-            value = self._invoke_resource(
-                template.handler, variables, template.context_param, session, request_id
+            value = self._read_resource_safe(
+                uri, template.handler, variables, template.context_param, session, request_id
             )
             # FastMCP serves JSON-shaped template reads as application/json
             # (static resources default to text/plain).
@@ -907,8 +908,9 @@ class AnodizeMCP:
 
         raise NotFoundError(f"Unknown resource: {uri!r}")
 
-    def _invoke_resource(
+    def _read_resource_safe(
         self,
+        uri: str,
         handler: Callable[..., Any],
         variables: dict[str, Any],
         context_param: Optional[str],
@@ -922,6 +924,15 @@ class AnodizeMCP:
             return run_maybe_async(handler(**kwargs))
         except ResourceError as exc:
             raise McpError(exc.message, code=RESOURCE_NOT_FOUND) from exc
+        except McpError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            detail = (
+                f"Error reading resource {uri!r}"
+                if self.mask_error_details
+                else f"Error reading resource {uri!r}: {exc}"
+            )
+            raise McpError(detail, code=RESOURCE_NOT_FOUND) from exc
 
     def _handle_prompt_get(
         self, params: dict[str, Any], session: Session, request_id: Any

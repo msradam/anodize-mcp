@@ -170,6 +170,7 @@ class JWTVerifier:
         algorithm: Optional[str] = None,
         required_scopes: Optional[list[str]] = None,
         jwks_timeout: float = 10.0,
+        cache_ttl: float = 3600.0,
     ):
         self._public_key = public_key
         self._secret = secret if secret is not None else public_key
@@ -179,7 +180,9 @@ class JWTVerifier:
         self._algorithm = algorithm
         self.required_scopes = required_scopes or []
         self._jwks_timeout = jwks_timeout
+        self._cache_ttl = cache_ttl
         self._jwks_cache: Optional[dict[str, Any]] = None
+        self._jwks_cache_time: Optional[float] = None
 
     def verify_token(self, token: str) -> Optional[AccessToken]:
         try:
@@ -258,13 +261,19 @@ class JWTVerifier:
         return rsa.RSAPublicNumbers(exponent, modulus).public_key()
 
     def _load_jwks(self) -> dict[str, Any]:
-        if self._jwks_cache is not None:
+        now = time.monotonic()
+        if (
+            self._jwks_cache is not None
+            and self._jwks_cache_time is not None
+            and (now - self._jwks_cache_time) < self._cache_ttl
+        ):
             return self._jwks_cache
         import urllib.request
 
         assert self._jwks_uri is not None
         with urllib.request.urlopen(self._jwks_uri, timeout=self._jwks_timeout) as response:
             self._jwks_cache = json.loads(response.read().decode("utf-8"))
+        self._jwks_cache_time = now
         return self._jwks_cache
 
     def _check_claims(self, claims: dict[str, Any]) -> None:

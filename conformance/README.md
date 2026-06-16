@@ -46,14 +46,16 @@ Two categories of FastMCP test fail by design and will not be made to pass:
 Run against FastMCP 3.4.2 at the pinned SHA. The CI gate runs these files in
 full (excluding timing/concurrency tests, which are not deterministic):
 
-| FastMCP test file | Result |
-|---|---|
-| `tests/prompts/test_prompt.py` | 50/50 |
-| `tests/resources/test_function_resources.py` | 20/20 |
-| `tests/resources/test_file_resources.py` | 11/11 |
-| `tests/tools/tool/test_output_schema.py` | 56/56 |
-| `tests/server/middleware/test_rate_limiting.py` | 22/22 |
-| `tests/server/middleware/test_timing.py` | 13/13 |
+| FastMCP test file | Filter | Result |
+|---|---|---|
+| `tests/prompts/test_prompt.py` | (none) | 50/50 |
+| `tests/resources/test_function_resources.py` | (none) | 20/20 |
+| `tests/resources/test_file_resources.py` | (none) | 11/11 |
+| `tests/tools/tool/test_output_schema.py` | (none) | 56/56 |
+| `tests/server/middleware/test_rate_limiting.py` | (none) | 22/22 |
+| `tests/server/middleware/test_timing.py` | (none) | 13/13 |
+| `tests/server/middleware/test_error_handling.py` | `not Integration and not Retry and not transform_tool_error` | 17/17 |
+| `tests/client/client/test_error_handling.py` | `(TestErrorHandling or TestCallToolRaiseOnError) and not validation_errors and not general_tool_exceptions and not specific_tool_errors_are_sent` | 8/8 |
 
 The broader core-suite figure is measured against a pinned file set so it can
 be reproduced exactly. The set is FastMCP's `tests/tools/tool`,
@@ -72,7 +74,7 @@ PYTHONPATH=src:conformance uv run --no-project --python 3.12 \
   /tmp/fastmcp-src/tests/server/test_server.py /tmp/fastmcp-src/tests/client/client
 ```
 
-The current figure on that set is 599 of 762 (79%); 59 further tests are
+The current figure on that set is 605 of 762 (79%); 59 further tests are
 deselected by the `-k` filter. The remaining failures are dominated by:
 
 - The two out-of-scope categories above (`isinstance(x, mcp.types.*)`, pydantic
