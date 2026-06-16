@@ -9,6 +9,7 @@ datetimes to ISO) the wire transports do.
 
 from __future__ import annotations
 
+import contextvars
 import json
 from concurrent.futures import ThreadPoolExecutor
 from queue import Queue
@@ -62,7 +63,7 @@ def serve_memory(
             ):
                 session.resolve_response(message)
                 continue
-            executor.submit(process, message)
+            executor.submit(contextvars.copy_context().run, process, message)
     finally:
         session.fail_pending("in-memory transport closed")
         executor.shutdown(wait=False)

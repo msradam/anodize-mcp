@@ -84,3 +84,8 @@ disallow_incomplete_defs = true
 [[tool.mypy.overrides]]
 module = ["cryptography.*", "uvicorn", "uvicorn.*"]
 ignore_missing_imports = true
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.2",
+]

@@ -34,11 +34,13 @@ class ErrorHandlingMiddleware(Middleware):
         include_traceback: bool = False,
         error_callback: Optional[Callable[[Exception, MiddlewareContext], None]] = None,
         transform_errors: bool = True,
+        mask_error_details: bool = False,
     ):
         self.logger = logger or logging.getLogger("fastmcp.errors")
         self.include_traceback = include_traceback
         self.error_callback = error_callback
         self.transform_errors = transform_errors
+        self.mask_error_details = mask_error_details
         self.error_counts: dict[str, int] = {}
 
     def _log_error(self, error: Exception, context: MiddlewareContext) -> None:
@@ -71,18 +73,21 @@ class ErrorHandlingMiddleware(Middleware):
 
         error_type = type(error.__cause__) if error.__cause__ else type(error)
 
+        def _msg(prefix: str) -> str:
+            return prefix if self.mask_error_details else f"{prefix}: {error!s}"
+
         if error_type in (ValueError, TypeError):
-            return McpError(f"Invalid params: {error!s}", code=INVALID_PARAMS)
+            return McpError(_msg("Invalid params"), code=INVALID_PARAMS)
         if error_type in (FileNotFoundError, KeyError, NotFoundError):
             method = context.method or ""
             if method.startswith("resources/"):
-                return McpError(f"Resource not found: {error!s}", code=RESOURCE_NOT_FOUND)
-            return McpError(f"Not found: {error!s}", code=NOT_FOUND)
+                return McpError(_msg("Resource not found"), code=RESOURCE_NOT_FOUND)
+            return McpError(_msg("Not found"), code=NOT_FOUND)
         if error_type is PermissionError:
-            return McpError(f"Permission denied: {error!s}", code=SERVER_ERROR)
+            return McpError(_msg("Permission denied"), code=SERVER_ERROR)
         if error_type in (TimeoutError, asyncio.TimeoutError):
-            return McpError(f"Request timeout: {error!s}", code=SERVER_ERROR)
-        return McpError(f"Internal error: {error!s}", code=INTERNAL_ERROR)
+            return McpError(_msg("Request timeout"), code=SERVER_ERROR)
+        return McpError(_msg("Internal error"), code=INTERNAL_ERROR)
 
     async def on_message(self, context: MiddlewareContext, call_next: CallNext) -> Any:
         try:

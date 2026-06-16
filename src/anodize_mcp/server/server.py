@@ -1251,12 +1251,15 @@ def _normalize_annotations(annotations: Any) -> Optional[dict[str, Any]]:
     return dict(annotations)
 
 
+_CONTEXT_STRING_NAMES = frozenset({"Context", "anodize_mcp.server.context.Context"})
+
+
 def _find_context_param(func: Callable[..., Any]) -> Optional[str]:
     hints = _compat.get_type_hints(func)
     for param_name, param in inspect.signature(func).parameters.items():
         annotation = hints.get(param_name, param.annotation)
         annotation, _ = _compat.unwrap_annotated(annotation)
-        if annotation is Context:
+        if annotation is Context or annotation in _CONTEXT_STRING_NAMES:
             return param_name
     return None
 
