@@ -43,6 +43,9 @@ from .client import (
     Client,
     ClientError,
     FastMCPTransport,
+    NodeStdioTransport,
+    PythonStdioTransport,
+    StdioTransport,
     StreamableHttpTransport,
 )
 from .clientfeatures import CompletionResult, CreateMessageResult, ElicitResult, Root
@@ -54,7 +57,7 @@ from .content import (
     ResourceLink,
     TextContent,
 )
-from .exceptions import McpError, NotFoundError, ResourceError, ToolError
+from .exceptions import McpError, NotFoundError, PromptError, ResourceError, ToolError
 from .prompts import PromptMessage
 from .protocol import LATEST_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS
 from .routes import Request, Response
@@ -88,6 +91,7 @@ __all__ = [
     "Field",
     "ToolError",
     "ResourceError",
+    "PromptError",
     "NotFoundError",
     "McpError",
     "TextContent",
@@ -129,6 +133,9 @@ __all__ = [
     "Client",
     "ClientError",
     "FastMCPTransport",
+    "NodeStdioTransport",
+    "PythonStdioTransport",
+    "StdioTransport",
     "StreamableHttpTransport",
     "CallToolResult",
     "LATEST_PROTOCOL_VERSION",

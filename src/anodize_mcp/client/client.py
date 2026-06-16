@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import dataclasses
 import inspect
 import json
@@ -86,6 +87,7 @@ class Client:
         target: Any = None,
         *,
         transport: Any = None,
+        auth: Optional[str] = None,
         sampling_handler: Optional[Callable[..., Any]] = None,
         elicitation_handler: Optional[Callable[..., Any]] = None,
         roots: Optional[Union[list[dict[str, Any]], Callable[[], Any]]] = None,
@@ -94,11 +96,14 @@ class Client:
         message_handler: Optional[Callable[[dict[str, Any]], Any]] = None,
         client_info: Optional[dict[str, Any]] = None,
         timeout: Optional[float] = None,
+        init_timeout: Optional[float] = None,
         env: Optional[dict[str, str]] = None,
         auto_initialize: bool = True,
     ):
         self._auto_initialize = auto_initialize
-        self._transport = _make_transport(target if transport is None else transport, env)
+        self._transport = _make_transport(
+            target if transport is None else transport, env, auth=auth
+        )
         self._sampling_handler = sampling_handler
         self._elicitation_handler = elicitation_handler
         self._roots = roots
@@ -107,6 +112,7 @@ class Client:
         self._message_handler = message_handler
         self._client_info = client_info or {"name": "anodize-client", "version": "0.4.0"}
         self._timeout = timeout
+        self._init_timeout = init_timeout
         self._outbox: Queue[Any] = Queue()
         self._pending: dict[int, asyncio.Future[dict[str, Any]]] = {}
         # progressToken -> handler, for tool calls that report progress.
@@ -136,7 +142,13 @@ class Client:
             # transport (and the executor thread reading it) leaks and blocks
             # event-loop shutdown.
             try:
-                await self._initialize()
+                if self._init_timeout is not None:
+                    try:
+                        await asyncio.wait_for(self._initialize(), self._init_timeout)
+                    except asyncio.TimeoutError as exc:
+                        raise ClientError("initialize handshake timed out") from exc
+                else:
+                    await self._initialize()
             except BaseException:
                 await self.close()
                 raise
@@ -311,8 +323,12 @@ class Client:
             items.extend(result.get(key, []))
             cursor = result.get("nextCursor")
             pages += 1
-            if not cursor or (max_pages is not None and pages >= max_pages):
+            if not cursor:
                 return [_wrap(item) for item in items]
+            if max_pages is not None and pages >= max_pages:
+                raise RuntimeError(
+                    f"{method} exceeded max_pages={max_pages} without a terminal cursor"
+                )
             # A server that repeats a cursor would loop forever; stop and warn, as FastMCP does.
             if cursor in seen:
                 warnings.warn(
@@ -327,6 +343,28 @@ class Client:
         return _wrap(raw)
 
     # -- public API -------------------------------------------------------
+
+    def new(self) -> Client:
+        """Return a new Client sharing the same transport configuration and
+        handlers but with independent session state.
+
+        The copy shares ``_transport``, all handler references, ``_client_info``,
+        ``_timeout``, and ``_auto_initialize``.  Session-specific state
+        (``_entered``, ``_pending``, ``_outbox``, ``initialize_result``,
+        ``_reader_task``, ``_progress_handlers``) is reset so the new instance
+        can be used in its own ``async with`` block concurrently.
+        """
+        c = copy.copy(self)
+        c._entered = 0
+        c._pending = {}
+        c._outbox = Queue()
+        c.initialize_result = None
+        c._reader_task = None
+        c._progress_handlers = {}
+        c._req_id = 0
+        c._progress_seq = 0
+        c._loop = None
+        return c
 
     def is_connected(self) -> bool:
         return self._reader_task is not None and not self._reader_task.done()
@@ -363,7 +401,7 @@ class Client:
             if token is not None:
                 self._progress_handlers.pop(token, None)
 
-    async def list_tools(self, *, max_pages: Optional[int] = None) -> list[dict[str, Any]]:
+    async def list_tools(self, *, max_pages: int | None = 250) -> list[dict[str, Any]]:
         return await self._list_all("tools/list", "tools", max_pages)
 
     async def list_tools_mcp(self, cursor: Optional[str] = None) -> Any:
@@ -404,15 +442,13 @@ class Client:
             )
         )
 
-    async def list_resources(self, *, max_pages: Optional[int] = None) -> list[dict[str, Any]]:
+    async def list_resources(self, *, max_pages: int | None = 250) -> list[dict[str, Any]]:
         return await self._list_all("resources/list", "resources", max_pages)
 
     async def list_resources_mcp(self, cursor: Optional[str] = None) -> Any:
         return await self._list_page("resources/list", cursor)
 
-    async def list_resource_templates(
-        self, *, max_pages: Optional[int] = None
-    ) -> list[dict[str, Any]]:
+    async def list_resource_templates(self, *, max_pages: int | None = 250) -> list[dict[str, Any]]:
         return await self._list_all("resources/templates/list", "resourceTemplates", max_pages)
 
     async def list_resource_templates_mcp(self, cursor: Optional[str] = None) -> Any:
@@ -425,7 +461,7 @@ class Client:
     async def read_resource_mcp(self, uri: str) -> Any:
         return _wrap(await self._request("resources/read", {"uri": uri}))
 
-    async def list_prompts(self, *, max_pages: Optional[int] = None) -> list[dict[str, Any]]:
+    async def list_prompts(self, *, max_pages: int | None = 250) -> list[dict[str, Any]]:
         return await self._list_all("prompts/list", "prompts", max_pages)
 
     async def list_prompts_mcp(self, cursor: Optional[str] = None) -> Any:
@@ -451,16 +487,31 @@ class Client:
         self,
         ref: dict[str, Any],
         argument: dict[str, Any],
+        context_arguments: Optional[dict[str, Any]] = None,
+        *,
         context: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
+        if context is not None and context_arguments is None:
+            warnings.warn(
+                "context= is deprecated; use context_arguments=",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            context_arguments = context
         params: dict[str, Any] = {"ref": ref, "argument": argument}
-        if context is not None:
-            params["context"] = {"arguments": context}
+        if context_arguments is not None:
+            params["context"] = {"arguments": context_arguments}
         result = await self._request("completion/complete", params)
         return _wrap(result["completion"])
 
     async def set_logging_level(self, level: str) -> None:
         await self._request("logging/setLevel", {"level": level})
+
+    async def cancel(self, request_id: int | str, reason: str | None = None) -> None:
+        params: dict[str, Any] = {"requestId": request_id}
+        if reason is not None:
+            params["reason"] = reason
+        await self._notify("notifications/cancelled", params)
 
 
 def _stringify_args(arguments: Optional[dict[str, Any]]) -> dict[str, str]:

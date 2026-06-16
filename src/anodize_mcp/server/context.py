@@ -80,6 +80,10 @@ class Context:
 
     @property
     def client_id(self) -> Optional[str]:
+        if self._meta:
+            meta_client_id = self._meta.get("client_id")
+            if meta_client_id is not None:
+                return meta_client_id
         return self._session.session_id
 
     @property
@@ -125,8 +129,15 @@ class Context:
     def client_supports_extension(self, name: str) -> bool:
         return name in self._session.client_capabilities
 
-    def send_notification(self, method: str, params: Optional[dict[str, Any]] = None) -> Any:
-        """Send an arbitrary JSON-RPC notification to the client."""
+    def send_notification(self, method: Any, params: Optional[dict[str, Any]] = None) -> Any:
+        """Send an arbitrary JSON-RPC notification to the client.
+
+        Accepts either a plain method string or a duck-typed notification object
+        (e.g. FastMCP's ServerNotificationType) that exposes .method and .params.
+        """
+        if not isinstance(method, str):
+            params = getattr(method, "params", None)
+            method = method.method
         self._session.send_message(make_notification(method, params))
         return defer(None)
 
@@ -339,6 +350,11 @@ class Context:
         self._require_client_capability("roots")
         result = self._session.send_request("roots/list", {}, timeout=timeout) or {}
         return defer([Root(uri=r["uri"], name=r.get("name")) for r in result.get("roots", [])])
+
+    def sample_step(self, *args: Any, **kwargs: Any) -> Any:
+        raise NotImplementedError(
+            "ctx.sample_step() is not implemented in anodize_mcp; use ctx.sample() for single-shot sampling"
+        )
 
 
 def _normalize_model_preferences(prefs: Any) -> Any:

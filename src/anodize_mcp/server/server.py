@@ -11,7 +11,7 @@ import inspect
 import threading
 import warnings
 import weakref
-from typing import Any, Callable, Optional, Sequence, TypeVar
+from typing import Any, Callable, Literal, Optional, Sequence, TypeVar
 
 from .. import _compat
 from .._asyncrun import run_coro, run_maybe_async
@@ -140,13 +140,17 @@ class AnodizeMCP:
         self._lifespan_refs = 0
         self._lifespan_lock = threading.Lock()
 
-    def _check_duplicate(self, kind: str, name: str, registry: Any) -> None:
+    def _check_duplicate(self, kind: str, name: str, registry: Any) -> bool:
+        """Return True if the caller should skip registration (on_duplicate='ignore')."""
         if name not in registry:
-            return
+            return False
         if self.on_duplicate == "error":
             raise ValueError(f"{kind} {name!r} is already registered")
-        if self.on_duplicate == "warn":
-            warnings.warn(f"{kind} {name!r} is already registered; replacing", stacklevel=3)
+        if self.on_duplicate == "ignore":
+            return True
+        # "warn" (default) and any unrecognised value: warn then replace.
+        warnings.warn(f"{kind} {name!r} is already registered; replacing", stacklevel=3)
+        return False
 
     # ------------------------------------------------------------------
     # Decorators
@@ -162,18 +166,22 @@ class AnodizeMCP:
         annotations: Optional[dict[str, Any]] = None,
         tags: Any = None,
         meta: Optional[dict[str, Any]] = None,
+        enabled: bool = True,
     ) -> Any:
         """Register a function as a tool.
 
         Usable bare (``@mcp.tool``) or called (``@mcp.tool(name="x")``). ``tags``
         is accepted for FastMCP source compatibility but not used for filtering.
+        Pass ``enabled=False`` to register the tool hidden; it will not appear in
+        ``list_tools`` until :meth:`enable_tool` is called.
         """
 
         def decorator(func: F) -> F:
             context_param = _find_context_param(func)
             specs = build_params(func, skip=(context_param,) if context_param else ())
             tool_name: str = name if name is not None else getattr(func, "__name__", "tool")
-            self._check_duplicate("tool", tool_name, self._tools)
+            if self._check_duplicate("tool", tool_name, self._tools):
+                return func
             out_schema, wrap = output_schema_for(_return_annotation(func))
             self._tools[tool_name] = ToolDef(
                 name=tool_name,
@@ -189,6 +197,8 @@ class AnodizeMCP:
                 tags=tags,
                 meta=meta,
             )
+            if not enabled:
+                self.disable_tool(tool_name)
             return func
 
         if callable(name_or_func):
@@ -209,6 +219,7 @@ class AnodizeMCP:
         annotations: Optional[dict[str, Any]] = None,
         tags: Any = None,
         meta: Optional[dict[str, Any]] = None,
+        enabled: bool = True,
     ) -> Callable[[F], F]:
         """Register a function as a resource or, if ``uri`` has ``{vars}``, a template."""
         if callable(uri):
@@ -244,7 +255,8 @@ class AnodizeMCP:
                     )
                 )
             else:
-                self._check_duplicate("resource", uri, self._resources)
+                if self._check_duplicate("resource", uri, self._resources):
+                    return func
                 self._resources[uri] = ResourceDef(
                     uri=uri,
                     handler=func,
@@ -258,6 +270,8 @@ class AnodizeMCP:
                     tags=tags,
                     meta=meta,
                 )
+                if not enabled:
+                    self._disabled.add(uri)
             return func
 
         return decorator
@@ -286,7 +300,8 @@ class AnodizeMCP:
                 for spec in specs
             ]
             prompt_name: str = name if name is not None else getattr(func, "__name__", "prompt")
-            self._check_duplicate("prompt", prompt_name, self._prompts)
+            if self._check_duplicate("prompt", prompt_name, self._prompts):
+                return func
             self._prompts[prompt_name] = PromptDef(
                 name=prompt_name,
                 handler=func,
@@ -332,16 +347,46 @@ class AnodizeMCP:
     # above already work when called directly, these just read more naturally.
 
     def add_tool(self, fn: Callable[..., Any], **kwargs: Any) -> Callable[..., Any]:
+        if isinstance(fn, ToolDef):
+            self._check_duplicate("tool", fn.name, self._tools)
+            self._tools[fn.name] = fn
+            return fn
         self.tool(**kwargs)(fn)
         return fn
 
-    def add_prompt(self, fn: Callable[..., Any], **kwargs: Any) -> Callable[..., Any]:
+    def add_prompt(
+        self, fn: Callable[..., Any] | PromptDef, **kwargs: Any
+    ) -> Callable[..., Any] | PromptDef:
+        if isinstance(fn, PromptDef):
+            self._check_duplicate("prompt", fn.name, self._prompts)
+            self._prompts[fn.name] = fn
+            return fn
         self.prompt(**kwargs)(fn)
         return fn
 
-    def add_resource(self, uri: str, fn: Callable[..., Any], **kwargs: Any) -> Callable[..., Any]:
-        self.resource(uri, **kwargs)(fn)
+    def add_resource(
+        self,
+        uri_or_resource: Any,
+        fn: Optional[Callable[..., Any]] = None,
+        **kwargs: Any,
+    ) -> Any:
+        if isinstance(uri_or_resource, ResourceDef):
+            rd = uri_or_resource
+            self._check_duplicate("resource", rd.uri, self._resources)
+            self._resources[rd.uri] = rd
+            return rd
+        if fn is None and hasattr(uri_or_resource, "uri") and hasattr(uri_or_resource, "handler"):
+            rd = uri_or_resource
+            self._check_duplicate("resource", rd.uri, self._resources)
+            self._resources[rd.uri] = rd
+            return rd
+        self.resource(uri_or_resource, **kwargs)(fn)
         return fn
+
+    def add_template(self, tpl: ResourceTemplateDef) -> ResourceTemplateDef:
+        self._templates.append(tpl)
+        self.notify_resources_changed()
+        return tpl
 
     def custom_route(
         self,
@@ -381,7 +426,13 @@ class AnodizeMCP:
         )
 
     def list_resources(self) -> Any:
-        return defer([attr_wrap(r.describe()) for r in self._resources.values()])
+        return defer(
+            [
+                attr_wrap(r.describe())
+                for r in self._resources.values()
+                if r.uri not in self._disabled
+            ]
+        )
 
     def list_resource_templates(self) -> Any:
         return defer([attr_wrap(t.describe()) for t in self._templates])
@@ -690,7 +741,7 @@ class AnodizeMCP:
         if method == "tools/list":
             return [t for t in self._tools.values() if t.name not in self._disabled]
         if method == "resources/list":
-            return list(self._resources.values())
+            return [r for r in self._resources.values() if r.uri not in self._disabled]
         if method == "resources/templates/list":
             return self._templates.copy()
         return list(self._prompts.values())
@@ -714,7 +765,8 @@ class AnodizeMCP:
         if method == "tools/call":
             return self._handle_tool_call(params, session, request_id)
         if method == "resources/list":
-            return self._paged("resources", list(self._resources.values()), params)
+            active_resources = [r for r in self._resources.values() if r.uri not in self._disabled]
+            return self._paged("resources", active_resources, params)
         if method == "resources/templates/list":
             return self._paged("resourceTemplates", list(self._templates), params)
         if method == "resources/read":
@@ -1043,27 +1095,49 @@ class AnodizeMCP:
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, lambda: self.run_stdio(**kwargs))
 
-    async def run_http_async(self, *, show_banner: bool = True, **kwargs: Any) -> None:
+    async def run_http_async(
+        self,
+        *,
+        transport: Literal["http", "streamable-http", "sse"] = "http",
+        show_banner: bool = True,
+        json_response: Optional[bool] = None,
+        **kwargs: Any,
+    ) -> None:
         import asyncio
 
+        if transport == "sse":
+            raise NotImplementedError('SSE transport not implemented; use transport="http"')
         loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, lambda: self.run_http(**kwargs))
+        await loop.run_in_executor(
+            None, lambda: self.run_http(transport=transport, json_response=json_response, **kwargs)
+        )
 
     def asgi_app(
         self,
         *,
+        transport: Literal["http", "streamable-http", "sse"] = "http",
         path: str = "/mcp",
         allowed_origins: Optional[set[str]] = None,
         stateless: bool = False,
         stateless_http: Optional[bool] = None,
         middleware: Optional[Sequence[Any]] = None,
+        json_response: Optional[bool] = None,
     ) -> Any:
         """Return the ASGI application, to run under uvicorn/gunicorn/hypercorn.
 
         ``stateless_http`` is the FastMCP-named alias of ``stateless``. The
         returned app carries a ``.lifespan`` attribute for mounting under
-        Starlette/FastAPI.
+        Starlette/FastAPI. ``json_response`` is accepted for FastMCP source
+        compatibility but not yet implemented; passing a non-None value raises
+        ``NotImplementedError``.
         """
+        if transport == "sse":
+            raise NotImplementedError('SSE transport not implemented; use transport="http"')
+        if json_response is not None:
+            raise NotImplementedError(
+                "json_response is not yet supported by the AnodizeMCP ASGI transport; "
+                "omit the argument or open an issue to request the feature"
+            )
         from ..transports.asgi import make_asgi_app
 
         return make_asgi_app(
@@ -1078,19 +1152,23 @@ class AnodizeMCP:
     def http_app(
         self,
         *,
+        transport: Literal["http", "streamable-http", "sse"] = "http",
         path: str = "/mcp",
         allowed_origins: Optional[set[str]] = None,
         stateless: bool = False,
         stateless_http: Optional[bool] = None,
         middleware: Optional[Sequence[Any]] = None,
+        json_response: Optional[bool] = None,
     ) -> Any:
         """FastMCP-named alias for :meth:`asgi_app`."""
         return self.asgi_app(
+            transport=transport,
             path=path,
             allowed_origins=allowed_origins,
             stateless=stateless,
             stateless_http=stateless_http,
             middleware=middleware,
+            json_response=json_response,
         )
 
     def run_http(
@@ -1098,6 +1176,7 @@ class AnodizeMCP:
         host: str = "127.0.0.1",
         port: int = 8000,
         *,
+        transport: Literal["http", "streamable-http", "sse"] = "http",
         path: str = "/mcp",
         log_level: Optional[str] = None,
         allowed_origins: Optional[set[str]] = None,
@@ -1106,6 +1185,7 @@ class AnodizeMCP:
         middleware: Optional[Sequence[Any]] = None,
         uvicorn_config: Optional[dict[str, Any]] = None,
         sockets: Any = None,
+        json_response: Optional[bool] = None,
     ) -> None:
         """Serve over Streamable HTTP, under uvicorn when it is importable.
 
@@ -1115,8 +1195,12 @@ class AnodizeMCP:
         to the standard-library server when uvicorn is not installed, but options
         it cannot honor (a non-empty ``uvicorn_config`` such as TLS via
         ``ssl_keyfile`` / ``ssl_certfile``, or ``middleware``) raise instead.
+        ``json_response`` is threaded into :meth:`asgi_app`; see its docstring.
         """
         import importlib.util
+
+        if transport == "sse":
+            raise NotImplementedError('SSE transport not implemented; use transport="http"')
 
         if stateless_http is not None:
             stateless = stateless_http
@@ -1125,11 +1209,13 @@ class AnodizeMCP:
             import uvicorn
 
             app = self.asgi_app(
+                transport=transport,
                 path=path,
                 allowed_origins=allowed_origins,
                 stateless=stateless,
                 stateless_http=stateless_http,
                 middleware=middleware,
+                json_response=json_response,
             )
             config_kwargs: dict[str, Any] = {"timeout_graceful_shutdown": 2, "lifespan": "on"}
             if log_level is not None:

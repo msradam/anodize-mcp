@@ -65,6 +65,8 @@ class Image:
         block.annotations = self.annotations
         return block
 
+    to_image_content = to_content_block
+
 
 class Audio:
     """An audio result; becomes an ``AudioContent`` block when returned by a tool."""
@@ -106,6 +108,8 @@ class Audio:
         block = AudioContent.from_bytes(self._read(), self.mime_type)
         block.annotations = self.annotations
         return block
+
+    to_audio_content = to_content_block
 
 
 class File:

@@ -56,19 +56,38 @@ class FastMCPTransport:
         self._inbox.put(SHUTDOWN)
 
 
-class _StdioTransport:
-    def __init__(self, command: list[str], env: Optional[dict[str, str]] = None):
-        self._command = command
+class StdioTransport:
+    """Launch a subprocess and communicate over stdio.
+
+    ``StdioTransport(command, args, env)`` mirrors the FastMCP public API:
+    ``command`` is the executable name, ``args`` are the arguments.
+
+    When ``keep_alive=True`` (the default), ``close()`` does not terminate the
+    subprocess, so re-entering an ``async with Client(transport)`` block reuses
+    the same process. The process is still terminated on garbage collection.
+    Set ``keep_alive=False`` to terminate on every ``close()``.
+    """
+
+    def __init__(
+        self,
+        command: str,
+        args: Optional[list[str]] = None,
+        env: Optional[dict[str, str]] = None,
+        keep_alive: bool = True,
+    ):
+        self._command = [command, *(args or [])]
         self._env = env
+        self._keep_alive = keep_alive
         self._proc: Optional[subprocess.Popen[bytes]] = None
 
     def start(self, outbox: Queue[Any]) -> None:
-        self._proc = subprocess.Popen(
-            self._command,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            env=self._env,
-        )
+        if self._proc is None or self._proc.poll() is not None:
+            self._proc = subprocess.Popen(
+                self._command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                env=self._env,
+            )
         threading.Thread(target=self._read, args=(outbox,), daemon=True).start()
 
     def _read(self, outbox: Queue[Any]) -> None:
@@ -91,8 +110,44 @@ class _StdioTransport:
         with contextlib.suppress(Exception):
             if self._proc.stdin is not None:
                 self._proc.stdin.close()
-        with contextlib.suppress(Exception):
-            self._proc.terminate()
+        if not self._keep_alive:
+            with contextlib.suppress(Exception):
+                self._proc.terminate()
+
+    def __del__(self) -> None:
+        if self._proc is not None:
+            with contextlib.suppress(Exception):
+                self._proc.terminate()
+
+
+# Keep the private name as an alias for internal use.
+_StdioTransport = StdioTransport
+
+
+class PythonStdioTransport(StdioTransport):
+    """Run a Python script as a stdio subprocess using the current interpreter."""
+
+    def __init__(
+        self,
+        script: str,
+        args: Optional[list[str]] = None,
+        env: Optional[dict[str, str]] = None,
+        keep_alive: bool = False,
+    ):
+        super().__init__(sys.executable, [script, *(args or [])], env=env, keep_alive=keep_alive)
+
+
+class NodeStdioTransport(StdioTransport):
+    """Run a Node.js script as a stdio subprocess."""
+
+    def __init__(
+        self,
+        script: str,
+        args: Optional[list[str]] = None,
+        env: Optional[dict[str, str]] = None,
+        keep_alive: bool = False,
+    ):
+        super().__init__("node", [script, *(args or [])], env=env, keep_alive=keep_alive)
 
 
 def _iter_sse(stream: Any) -> Iterator[dict[str, Any]]:
@@ -119,9 +174,17 @@ class StreamableHttpTransport:
     server-initiated messages (progress, sampling, elicitation).
     """
 
-    def __init__(self, url: str, headers: Optional[dict[str, str]] = None, timeout: float = 30.0):
+    def __init__(
+        self,
+        url: str,
+        headers: Optional[dict[str, str]] = None,
+        timeout: float = 30.0,
+        auth: Optional[str] = None,
+    ):
         self._url = url
         self._headers = dict(headers or {})
+        if auth is not None:
+            self._headers["Authorization"] = f"Bearer {auth}"
         self._timeout = timeout
         self._session_id: Optional[str] = None
         self._outbox: Optional[Queue[Any]] = None
@@ -231,18 +294,20 @@ class StreamableHttpTransport:
             self._outbox.put(SHUTDOWN)
 
 
-def _make_transport(target: Any, env: Optional[dict[str, str]]) -> Any:
+def _make_transport(target: Any, env: Optional[dict[str, str]], auth: Optional[str] = None) -> Any:
     if isinstance(target, str) and target.startswith(("http://", "https://")):
-        return StreamableHttpTransport(target)
+        return StreamableHttpTransport(target, auth=auth)
     if hasattr(target, "handle_message") and hasattr(target, "new_session"):
         return FastMCPTransport(target)
     # A .py/.js script path launches a stdio subprocess, as FastMCP infers.
     if isinstance(target, (str, Path)) and str(target).endswith((".py", ".js")):
         path = str(target)
-        runner = [sys.executable] if path.endswith(".py") else ["node"]
-        return _StdioTransport([*runner, path], env=env)
+        if path.endswith(".py"):
+            return PythonStdioTransport(path, env=env)
+        return NodeStdioTransport(path, env=env)
     if isinstance(target, (list, tuple)):
-        return _StdioTransport([str(x) for x in target], env=env)
+        cmd = [str(x) for x in target]
+        return StdioTransport(cmd[0], cmd[1:] or None, env=env, keep_alive=False)
     if hasattr(target, "start") and hasattr(target, "send") and hasattr(target, "close"):
         return target
     raise TypeError(f"cannot build a transport from {target!r}")

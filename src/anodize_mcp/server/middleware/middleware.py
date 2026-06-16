@@ -32,14 +32,13 @@ class CallNext(Generic[T, R]):
         raise NotImplementedError
 
 
-@dataclass
+@dataclass(frozen=True, kw_only=True)
 class MiddlewareContext(Generic[T]):
     """What a middleware hook receives about the message in flight.
 
     Generic over the message type, matching FastMCP so ``MiddlewareContext[T]``
-    annotations resolve. FastMCP's context is frozen and keyword-only; this one
-    is a plain dataclass because Python 3.9 lacks kw_only, but ``copy`` is the
-    supported mutation pattern either way.
+    annotations resolve. Frozen and keyword-only; use ``copy`` to derive a
+    modified context.
     """
 
     message: Any

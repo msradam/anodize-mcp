@@ -34,6 +34,14 @@ class ToolResult:
     def __post_init__(self) -> None:
         if self.content is None is self.structured_content:
             raise ValueError("Either content or structured_content must be provided")
+        if self.structured_content is not None:
+            from ..content import to_jsonable
+
+            result = to_jsonable(self.structured_content)
+            if not isinstance(result, dict):
+                raise ValueError(
+                    f"ToolResult.structured_content must be a JSON object (dict), got {type(result).__name__}"
+                )
         if self.content is None:
             from ..content import to_jsonable
 

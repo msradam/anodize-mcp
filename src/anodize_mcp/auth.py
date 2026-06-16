@@ -172,6 +172,11 @@ class JWTVerifier:
         jwks_timeout: float = 10.0,
         cache_ttl: float = 3600.0,
     ):
+        key = public_key if public_key is not None else secret
+        if key is None and jwks_uri is None:
+            raise ValueError("Either public_key (or secret) or jwks_uri must be provided")
+        if key is not None and jwks_uri is not None:
+            raise ValueError("Only one of public_key/secret or jwks_uri may be provided")
         self._public_key = public_key
         self._secret = secret if secret is not None else public_key
         self._jwks_uri = jwks_uri

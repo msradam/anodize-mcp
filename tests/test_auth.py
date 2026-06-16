@@ -50,7 +50,9 @@ class StaticTokenVerifierTest(unittest.TestCase):
 
 class JWTVerifierHS256Test(unittest.TestCase):
     def setUp(self):
-        self.v = JWTVerifier(secret="s3cr3t", issuer="https://idp", audience="anodize")
+        self.v = JWTVerifier(
+            secret="s3cr3t", issuer="https://idp", audience="anodize", algorithm="HS256"
+        )
 
     def test_valid(self):
         token = make_hs256(

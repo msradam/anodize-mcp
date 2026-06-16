@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -81,11 +82,22 @@ class ToolError(Exception):
     for business-logic failures.
     """
 
-    def __init__(self, message: str, *, details: Optional[Any] = None):
+    def __init__(
+        self,
+        message: str,
+        *,
+        details: Optional[Any] = None,
+        log_level: int = logging.ERROR,
+    ):
         super().__init__(message)
         self.message = message
         self.details = details
+        self.log_level = log_level
 
 
 class ResourceError(ToolError):
     """Like :class:`ToolError` but for resource reads."""
+
+
+class PromptError(Exception):
+    pass
