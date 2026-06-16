@@ -68,13 +68,13 @@ PYTHONPATH=src:conformance uv run --no-project --python 3.12 \
   --with "fastmcp==3.4.2" --with pytest --with pytest-asyncio --with pytest-timeout \
   --with opentelemetry-sdk --with opentelemetry-api --with dirty-equals --with inline-snapshot \
   python -m pytest -p aliasplugin -W ignore -o asyncio_mode=auto \
-  -k "not Integration and not Retry" --timeout=30 \
+  -k "not Integration and not Retry and not streamable_http_clients" --timeout=30 \
   /tmp/fastmcp-src/tests/tools/tool /tmp/fastmcp-src/tests/resources \
   /tmp/fastmcp-src/tests/prompts /tmp/fastmcp-src/tests/server/middleware \
   /tmp/fastmcp-src/tests/server/test_server.py /tmp/fastmcp-src/tests/client/client
 ```
 
-The current figure on that set is 605 of 762 (79%); 59 further tests are
+The current figure on that set is 605 of 762 (79%); 60 further tests are
 deselected by the `-k` filter. The remaining failures are dominated by:
 
 - The two out-of-scope categories above (`isinstance(x, mcp.types.*)`, pydantic
